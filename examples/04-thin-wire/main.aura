@@ -1,0 +1,197 @@
+; examples/04-thin-wire/main.aura
+;
+; Phase 4 denseness probe — thin schema-gated wire boundary (Axis D + E + F).
+;
+; Wire format (pure Aura strings):
+;   HMSG|v1|<id>|<from>|<to>|<region>|<payload>
+;
+; Scenario:
+;   R0: encode/decode roundtrip preserves fields
+;   R1: valid wire → topology send → collector correctness
+;   R2: schema refuse (bad magic, bad version, pipe injection, bad payload)
+;   R3: batch wire load (N messages) all schema-ok, core escapes=0
+;   R4: metrology — wire_* counters + refuse observability
+;
+; No multi-host (Phase 5). No external queue (would be denseness collapse).
+;
+; Run: ./scripts/run-aura.sh examples/04-thin-wire/main.aura
+
+(require "hermes-min" all:)
+
+(hermes:stats-reset!)
+
+(display "=== Hermes 04-thin-wire: schema-gated wire denseness ===")
+(newline)
+(display "hermes:min-version=")
+(display hermes:min-version)
+(display " wire-version=")
+(display hermes:wire-version)
+(display " schema=")
+(display hermes:wire-magic)
+(display "/")
+(display hermes:wire-schema-version)
+(newline)
+
+(define N-BATCH 20)
+
+(let* ((t (hermes:build-star-topology))
+       (complete0 (hermes:check-true (hermes:topo-complete? t))))
+
+  ; ── R0: roundtrip ──
+  (let* ((m0 (hermes:make-msg "id1" "producer" "collector" "east" 7))
+         (frame0 (hermes:wire-encode m0))
+         (enc-ok (hermes:check-true (string? frame0)))
+         (rt-ok (hermes:check-true (hermes:wire-roundtrip? m0)))
+         (dec0 (hermes:wire-decode frame0))
+         (pay-ok (hermes:check-eq (hermes:msg-payload dec0) 7))
+         (r0-ok (and enc-ok rt-ok pay-ok)))
+    (display "R0 frame=")
+    (display frame0)
+    (newline)
+    (display "R0 ok=")
+    (display r0-ok)
+    (newline)
+
+    ; ── R1: wire → topology ──
+    (hermes:clear-inbox! t "collector")
+    (let* ((frame1 (hermes:wire-encode
+                     (hermes:make-msg "w1" "producer" "collector" "east" 11)))
+           (r1 (hermes:wire-send! t "producer" frame1 16))
+           (r1-ok
+             (and (hermes:check-true (hermes:alist-ref ":wire_ok" r1 #f))
+                  (hermes:check-true (hermes:alist-ref ":ok" r1 #f))
+                  (hermes:check-eq (hermes:alist-ref ":payload" r1 0) 22)
+                  (hermes:check-eq (hermes:inbox-sum t "collector") 22))))
+      (display "R1 send: ")
+      (write r1)
+      (newline)
+      (display "R1 ok=")
+      (display r1-ok)
+      (newline)
+
+      ; ── R2: schema refuse battery ──
+      (let* ((bad-magic "XMSG|v1|a|b|c|east|1")
+             (bad-ver "HMSG|v0|a|b|c|east|1")
+             (bad-pipe "HMSG|v1|a|b|c|ea|st|1")
+             (bad-pay "HMSG|v1|a|producer|collector|east|nope")
+             (inj "HMSG|v1|id|from|to|east|1|EXTRA")
+             (empty "")
+             (e-magic (hermes:check-true (not (hermes:wire-valid? bad-magic))))
+             (e-ver (hermes:check-true (not (hermes:wire-valid? bad-ver))))
+             (e-pipe (hermes:check-true (not (hermes:wire-valid? bad-pipe))))
+             (e-pay (hermes:check-true (not (hermes:wire-valid? bad-pay))))
+             (e-inj (hermes:check-true (not (hermes:wire-valid? inj))))
+             (e-empty (hermes:check-true (not (hermes:wire-valid? empty))))
+             (ref1 (hermes:wire-send! t "producer" bad-pay 16))
+             (ref-ok (hermes:check-true
+                       (and (not (hermes:alist-ref ":ok" ref1 #t))
+                            (not (hermes:alist-ref ":wire_ok" ref1 #t))
+                            (equal? (hermes:alist-ref ":reason" ref1 "")
+                                    "schema-refuse"))))
+             ; encode refuse: field with pipe
+             (bad-msg (list "a|b" "producer" "collector" "east" 1 0))
+             (enc-refuse (hermes:check-true (not (hermes:wire-encode bad-msg))))
+             (r2-ok (and e-magic e-ver e-pipe e-pay e-inj e-empty ref-ok enc-refuse)))
+        (display "R2 refuse magic/ver/pipe/pay/inj/empty/send/enc=")
+        (display e-magic)
+        (display e-ver)
+        (display e-pipe)
+        (display e-pay)
+        (display e-inj)
+        (display e-empty)
+        (display ref-ok)
+        (display enc-refuse)
+        (newline)
+        (display "R2 ok=")
+        (display r2-ok)
+        (newline)
+
+        ; ── R3: batch wire load ──
+        (hermes:clear-inbox! t "collector")
+        (let* ((r3 (hermes:wire-batch-send! t N-BATCH 2))
+               (r3-ok
+                 (and (hermes:check-eq (hermes:alist-ref ":delivered" r3 0) N-BATCH)
+                      (hermes:check-eq (hermes:alist-ref ":failed" r3 -1) 0)
+                      (hermes:check-eq (hermes:alist-ref ":refused" r3 -1) 0)
+                      (hermes:check-eq (hermes:alist-ref ":actual_sum" r3 0)
+                                       (hermes:alist-ref ":expected_sum" r3 -1)))))
+          (display "R3 batch: ")
+          (write r3)
+          (newline)
+          (display "R3 ok=")
+          (display r3-ok)
+          (newline)
+
+          ; ── R4: metrology + denseness gates ──
+          (let* ((w-enc (hermes:stats-ref "wire_encode"))
+                 (w-dec (hermes:stats-ref "wire_decode"))
+                 (w-ok (hermes:stats-ref "wire_ok"))
+                 (w-ref (hermes:stats-ref "wire_refuse"))
+                 (w-send (hermes:stats-ref "wire_send"))
+                 (w-bytes (hermes:stats-ref "wire_bytes"))
+                 (m-enc (hermes:check-ge w-enc N-BATCH))
+                 (m-dec (hermes:check-ge w-dec N-BATCH))
+                 (m-ok (hermes:check-ge w-ok N-BATCH))
+                 ; Metered refuses only on encode/decode/send gate (not pure valid? checks)
+                 (m-ref (hermes:check-ge w-ref 2))
+                 (m-send (hermes:check-ge w-send N-BATCH))
+                 (m-bytes (hermes:check-ge w-bytes 100))
+                 (esc-ok (hermes:check-eq (hermes:stats-ref "escapes") 0))
+                 (r4-ok (and m-enc m-dec m-ok m-ref m-send m-bytes esc-ok)))
+            (display "R4 wire stats enc=")
+            (display w-enc)
+            (display " dec=")
+            (display w-dec)
+            (display " ok=")
+            (display w-ok)
+            (display " refuse=")
+            (display w-ref)
+            (display " send=")
+            (display w-send)
+            (display " bytes=")
+            (display w-bytes)
+            (newline)
+            (display "R4 ok=")
+            (display r4-ok)
+            (newline)
+
+            (display "stats: ")
+            (write (hermes:stats-alist))
+            (newline)
+
+            (let ((all-ok
+                    (and complete0 r0-ok r1-ok r2-ok r3-ok r4-ok
+                         (= (hermes:stats-ref "correctness_fail") 0)
+                         (= (hermes:stats-ref "escapes") 0)
+                         (>= (hermes:stats-ref "wire_ok") N-BATCH)
+                         (>= (hermes:stats-ref "wire_refuse") 2))))
+              (if all-ok
+                (begin
+                  (display "PASS: thin schema-gated wire denseness (escapes=0)")
+                  (newline)
+                  (display "RESULT pass example=04-thin-wire escapes=0 wire_ok=")
+                  (display (hermes:stats-ref "wire_ok"))
+                  (display " wire_refuse=")
+                  (display (hermes:stats-ref "wire_refuse"))
+                  (newline))
+                (begin
+                  (display "FAIL: thin wire denseness probe")
+                  (newline)
+                  (display "RESULT fail example=04-thin-wire")
+                  (newline)
+                  (display "  r0=")
+                  (display r0-ok)
+                  (display " r1=")
+                  (display r1-ok)
+                  (display " r2=")
+                  (display r2-ok)
+                  (display " r3=")
+                  (display r3-ok)
+                  (display " r4=")
+                  (display r4-ok)
+                  (newline)
+                  (display "  escapes=")
+                  (display (hermes:stats-ref "escapes"))
+                  (display " correctness_fail=")
+                  (display (hermes:stats-ref "correctness_fail"))
+                  (newline))))))))))

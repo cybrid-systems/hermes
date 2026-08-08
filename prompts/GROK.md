@@ -23,12 +23,13 @@ Primary objects under test:
 
 ## Current Status
 
-Phase 1–3 landed:
+Phase 1–4 landed:
 - `01-minimal-topology` (A+F) — pure-Aura star/region, escapes=0
 - `02-mutation-routing` (A+B+F) — hot routes/roles/AST coord policy + dual rollback
 - `03-failure-recovery` (C+E+F) — pause/drop/failover/recover + fault event log
+- `04-thin-wire` (D+E+F) — HMSG\|v1 schema-gated wire, escapes=0
 
-Phases 4–5 still planned (wire, multi-host). Avoid `std/orchestrator` until aura#2767.
+Phase 5 still planned (multi-host soak). Avoid `std/orchestrator` until aura#2767.
 
 ## When generating or reviewing code
 

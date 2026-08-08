@@ -8,6 +8,7 @@ PROBES=(
   01-minimal-topology
   02-mutation-routing
   03-failure-recovery
+  04-thin-wire
 )
 
 pass=0

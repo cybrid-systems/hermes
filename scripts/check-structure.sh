@@ -16,9 +16,11 @@ required=(
   "lib/hermes-topology.aura"
   "lib/hermes-mutate.aura"
   "lib/hermes-fault.aura"
+  "lib/hermes-wire.aura"
   "examples/01-minimal-topology/main.aura"
   "examples/02-mutation-routing/main.aura"
   "examples/03-failure-recovery/main.aura"
+  "examples/04-thin-wire/main.aura"
   "scripts/run-aura.sh"
   "scripts/run-all.sh"
 )

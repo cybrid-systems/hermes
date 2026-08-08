@@ -1,54 +1,57 @@
 # Denseness Report — \(S_{\mathrm{Hermes}}\)
 
-**Status**: Phase 1–3 probes landed (partial evidence; full judgment deferred)
+**Status**: Phase 1–4 probes landed (partial evidence; multi-host judgment deferred)
 
 ## Summary Judgment
 
-*Not yet a full denseness claim on \(S_{\mathrm{Hermes}}\).*  
+*Not yet a full denseness claim on multi-host \(S_{\mathrm{Hermes}}\).*  
+Single-host / single-process denseness on axes **A–F (partial D)** is constructively positive:
 
 | Phase | Result | Axes |
 |-------|--------|------|
 | 1 Minimal topology + metrology | **pass**, escapes=0 | A F |
 | 2 Mutation of routing / roles / AST policy under load | **pass**, escapes=0 | A B F |
 | 3 Failure injection + recovery | **pass**, escapes=0 | C E F |
+| 4 Thin schema-gated wire | **pass**, escapes=0 | D E F |
 
-Phase 3 shows **failure & partiality as first-class semantics** on the pure-Aura coordination path: agent pause, message drop, failover routing, and full recover — with an observable fault event log (Axis E) and zero escapes.
+Phase 4 shows the **wire schema boundary** can live in pure Aura \(V_A\) (`HMSG|v1|…` pipe frame), refuse invalid frames before topology delivery, and meter crossings via `wire_*` stats — without external queues or JSON engine on the denseness path.
 
-Axes D (wire/transport \(E\)) and multi-host soak remain open.  
+Phase 5 (multi-host sockets / discovery) remains the open pressure test for true network \(E\).
+
 `std/orchestrator` still avoided ([aura#2767](https://github.com/cybrid-systems/aura/issues/2767)).
 
 ## Probe Results
 
 | Probe | Axes | Result | Notes |
 |-------|------|--------|-------|
-| 01-minimal-topology | A F | **pass** | Star/region; N=40; escapes=0 |
-| 02-mutation-routing | A B F | **pass** | Route/role/AST mutation + dual rollback |
-| 03-failure-recovery | C E F | **pass** | pause/drop/failover/recover + event log |
+| 01-minimal-topology | A F | **pass** | Star/region; N=40 |
+| 02-mutation-routing | A B F | **pass** | Route/role/AST + dual rollback |
+| 03-failure-recovery | C E F | **pass** | pause/drop/failover/recover |
+| 04-thin-wire | D E F | **pass** | schema gate + batch wire send |
 
-### 03-failure-recovery detail
+### 04-thin-wire detail
 
-| Round | Failure / recovery | Verify |
-|-------|--------------------|--------|
-| R0 | baseline | east*2 OK |
-| R1 | pause `worker-e` | delivered=0, `:reason paused` |
-| R2 | resume | full recover |
-| R3 | inject N drops at `router` | failed=N, delivered=batch−N |
-| R4 | pause + `failover-east!` | east via worker-w *3 |
-| R5 | `recover-normal!` | baseline OK; event log denseness |
+| Round | What |
+|-------|------|
+| R0 | encode/decode roundtrip |
+| R1 | valid wire → topology → collector |
+| R2 | refuse bad magic/version/arity/payload/injection |
+| R3 | batch N=20 wire messages, sum closed-form |
+| R4 | `wire_*` metrology; escapes=0 |
 
-- **Escapes on coordination path**: **0**
-- **Out of scope**: wire (Phase 4), multi-host (Phase 5)
+- **Escapes on coordination + wire-schema path**: **0** (pure-Aura string schema)
+- **Conceptual \(E\)**: wire is a gated boundary; implementation remains in \(V_A\) for this phase
+- **Out of scope**: multi-host TCP/UDP, external brokers (Phase 5 / denseness collapse if required on core)
 
 ## Escape Summary
 
-See [`escape-log.md`](escape-log.md) — empty for Phase 1–3 core paths.
+See [`escape-log.md`](escape-log.md). Phase 1–4 core paths: no required leave from \(V_A\).
 
 ## Host residuals
 
-See [`host-residuals.md`](host-residuals.md) — aura#2766–#2769.  
-Phase 3 note: private non-exported helpers that free-ref other private helpers can still break; prefer exported bindings or inlined bodies (same discipline as #2766 class).
+See [`host-residuals.md`](host-residuals.md) — aura#2766–#2769.
 
 ## Next Actions
 
-1. Phase 4: thin schema-gated wire \(E\) (Axis D).
-2. Phase 5: multi-host soak + denseness judgment.
+1. Phase 5: multi-host soak + denseness judgment (thin transport \(E\) if host forces it).
+2. Optionally adopt `std/orchestrator` when #2767 fixed.

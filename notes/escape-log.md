@@ -4,7 +4,13 @@ Every leave from pure Aura (\(V_A\)) on a coordination-critical path must be rec
 
 | Date | Location | Reason | Mechanism | Impact | Mitigation / Plan |
 |------|----------|--------|-----------|--------|-------------------|
-| (none yet) | | | | | |
+| (none on Phase 1–4 core) | | | | | |
+
+## Phase 4 wire note
+
+The Phase 4 wire path (`hermes-wire.aura`, `HMSG|v1|…`) is **schema-gated and metered** (`wire_encode` / `wire_decode` / `wire_refuse` / `wire_bytes`) but implemented entirely in pure Aura strings. It is a **conceptual boundary \(E\)** without a required host/FFI leave.
+
+If Phase 5 multi-host transport needs sockets / OS I/O, record those leaves here as audited \(E\).
 
 ## Convention
 

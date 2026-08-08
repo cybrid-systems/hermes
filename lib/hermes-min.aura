@@ -1,4 +1,4 @@
-; lib/hermes-min.aura — Phase 1–3 facade (Axes A + B + C + E + F)
+; lib/hermes-min.aura — Phase 1–4 facade (Axes A–F partial; D wire landed)
 ;
 ; (require "hermes-min" all:)
 ;
@@ -9,7 +9,7 @@
         hermes:time-call hermes:check-eq hermes:check-true hermes:check-ge
         hermes:escape-note!
         hermes:topology-version hermes:mutate-version
-        hermes:fault-version hermes:min-version
+        hermes:fault-version hermes:wire-version hermes:min-version
         hermes:msg-id hermes:msg-from hermes:msg-to
         hermes:msg-region hermes:msg-payload hermes:msg-hops
         hermes:make-msg hermes:msg-with-hops hermes:msg-with-from
@@ -42,11 +42,18 @@
         hermes:install-source hermes:safety-ok?
         hermes:snapshot hermes:restore hermes:rebind-safe
         hermes:count-events-kind
-        hermes:failover-east! hermes:recover-normal!)
+        hermes:failover-east! hermes:recover-normal!
+        hermes:wire-magic hermes:wire-schema-version
+        hermes:wire-field-ok?
+        hermes:wire-encode hermes:wire-decode
+        hermes:wire-valid? hermes:wire-errors
+        hermes:wire-send! hermes:wire-roundtrip?
+        hermes:wire-batch-send!)
 
 (require "hermes-measure" all:)
 (require "hermes-topology" all:)
 (require "hermes-mutate" all:)
 (require "hermes-fault" all:)
+(require "hermes-wire" all:)
 
-(define hermes:min-version 3)
+(define hermes:min-version 4)

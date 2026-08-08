@@ -1,0 +1,198 @@
+; lib/hermes-wire.aura — Axis D: thin schema-gated wire surface
+;
+; (require "hermes-wire" all:)
+;
+; Canonical wire (pure Aura strings — no JSON engine required):
+;   HMSG|v1|<id>|<from>|<to>|<region>|<payload>
+;
+; Fields must not contain '|' . payload must be a number token.
+; Schema gate refuses malformed / injection-like frames before topology send.
+;
+; Denseness: wire path stays in V_A (string schema). Boundary crossings are
+; metered via wire_* stats (not unguarded external queues). Form order:
+; export BEFORE require (host #2766).
+
+(export hermes:wire-version
+        hermes:wire-magic
+        hermes:wire-schema-version
+        hermes:wire-field-ok?
+        hermes:wire-encode
+        hermes:wire-decode
+        hermes:wire-valid?
+        hermes:wire-errors
+        hermes:wire-send!
+        hermes:wire-roundtrip?
+        hermes:wire-batch-send!)
+
+(require "std/string" all:)
+(require "std/list" all:)
+(require "hermes-measure" all:)
+(require "hermes-topology" all:)
+
+(define hermes:wire-version 1)
+(define hermes:wire-magic "HMSG")
+(define hermes:wire-schema-version "v1")
+
+; Field may not be empty and may not contain the delimiter '|'.
+(define (hermes:wire-field-ok? s)
+  (and (string? s)
+       (> (string-length s) 0)
+       (not (string-contains? s "|"))))
+
+; Encode a topology message list → wire string, or #f if schema refuse.
+(define (hermes:wire-encode msg)
+  (if (not (and (list? msg) (>= (length msg) 5)))
+    (begin
+      (hermes:stats-bump! "wire_refuse")
+      #f)
+    (let ((id (hermes:msg-id msg))
+          (from (hermes:msg-from msg))
+          (to (hermes:msg-to msg))
+          (region (hermes:msg-region msg))
+          (payload (hermes:msg-payload msg)))
+      (if (not (and (hermes:wire-field-ok? id)
+                    (hermes:wire-field-ok? from)
+                    (hermes:wire-field-ok? to)
+                    (hermes:wire-field-ok? region)
+                    (number? payload)))
+        (begin
+          (hermes:stats-bump! "wire_refuse")
+          #f)
+        (let ((frame
+                (string-append
+                  hermes:wire-magic "|"
+                  hermes:wire-schema-version "|"
+                  id "|" from "|" to "|" region "|"
+                  (number->string payload))))
+          (hermes:stats-bump! "wire_encode")
+          (hermes:stats-bump! "wire_ok")
+          (hermes:stats-set! "wire_bytes"
+            (+ (hermes:stats-ref "wire_bytes") (string-length frame)))
+          frame)))))
+
+; Schema errors for a wire string (list of reason strings; empty = valid).
+(define (hermes:wire-errors text)
+  (if (not (string? text))
+    (list "not-a-string")
+    (if (equal? text "")
+      (list "empty")
+      (let ((parts (string-split text "|")))
+        (if (not (= (length parts) 7))
+          (list "bad-arity")
+          (let ((magic (list-ref parts 0))
+                (ver (list-ref parts 1))
+                (id (list-ref parts 2))
+                (from (list-ref parts 3))
+                (to (list-ref parts 4))
+                (region (list-ref parts 5))
+                (pay-s (list-ref parts 6))
+                (errs (quote ())))
+            (if (not (equal? magic hermes:wire-magic))
+              (set! errs (cons "bad-magic" errs))
+              #f)
+            (if (not (equal? ver hermes:wire-schema-version))
+              (set! errs (cons "bad-version" errs))
+              #f)
+            (if (not (hermes:wire-field-ok? id))
+              (set! errs (cons "bad-id" errs))
+              #f)
+            (if (not (hermes:wire-field-ok? from))
+              (set! errs (cons "bad-from" errs))
+              #f)
+            (if (not (hermes:wire-field-ok? to))
+              (set! errs (cons "bad-to" errs))
+              #f)
+            (if (not (hermes:wire-field-ok? region))
+              (set! errs (cons "bad-region" errs))
+              #f)
+            (let ((pay (string->number pay-s)))
+              (if (not (number? pay))
+                (set! errs (cons "bad-payload" errs))
+                #f))
+            errs))))))
+
+(define (hermes:wire-valid? text)
+  (null? (hermes:wire-errors text)))
+
+; Decode wire string → message list (id from to region payload 0), or #f.
+(define (hermes:wire-decode text)
+  (hermes:stats-bump! "wire_decode")
+  (let ((errs (hermes:wire-errors text)))
+    (if (not (null? errs))
+      (begin
+        (hermes:stats-bump! "wire_refuse")
+        #f)
+      (let ((parts (string-split text "|")))
+        (let ((id (list-ref parts 2))
+              (from (list-ref parts 3))
+              (to (list-ref parts 4))
+              (region (list-ref parts 5))
+              (pay (string->number (list-ref parts 6))))
+          (hermes:stats-bump! "wire_ok")
+          (hermes:stats-set! "wire_bytes"
+            (+ (hermes:stats-ref "wire_bytes") (string-length text)))
+          (hermes:make-msg id from to region pay))))))
+
+; Round-trip: encode then decode equals field-wise (payload number, hops reset 0).
+(define (hermes:wire-roundtrip? msg)
+  (let ((frame (hermes:wire-encode msg)))
+    (if (not frame)
+      #f
+      (let ((back (hermes:wire-decode frame)))
+        (if (not back)
+          #f
+          (and (equal? (hermes:msg-id msg) (hermes:msg-id back))
+               (equal? (hermes:msg-from msg) (hermes:msg-from back))
+               (equal? (hermes:msg-to msg) (hermes:msg-to back))
+               (equal? (hermes:msg-region msg) (hermes:msg-region back))
+               (= (hermes:msg-payload msg) (hermes:msg-payload back))))))))
+
+; Cross wire boundary then topology send.
+; text → schema gate → decode → hermes:send!
+; → alist :ok :wire_ok :reason ...  (includes deliver fields when ok)
+(define (hermes:wire-send! t start text max-hops)
+  (hermes:stats-bump! "wire_send")
+  (if (not (hermes:wire-valid? text))
+    (begin
+      (hermes:stats-bump! "wire_refuse")
+      (list (cons ":ok" #f)
+            (cons ":wire_ok" #f)
+            (cons ":reason" "schema-refuse")
+            (cons ":errors" (hermes:wire-errors text))))
+    (let ((msg (hermes:wire-decode text)))
+      (if (not msg)
+        (list (cons ":ok" #f)
+              (cons ":wire_ok" #f)
+              (cons ":reason" "decode-fail"))
+        (let ((r (hermes:send! t start msg max-hops)))
+          (cons (cons ":wire_ok" #t) r))))))
+
+; Send n east payloads 1..n via wire encode path. factor for expected sum.
+; → alist :delivered :failed :refused :expected_sum :actual_sum
+(define (hermes:wire-batch-send! t n factor)
+  (let ((nn (if (and (number? n) (> n 0)) n 0))
+        (f (if (number? factor) factor 2)))
+    (let loop ((i 1) (delivered 0) (failed 0) (refused 0) (expected 0))
+      (if (> i nn)
+        (list (cons ":delivered" delivered)
+              (cons ":failed" failed)
+              (cons ":refused" refused)
+              (cons ":expected_sum" expected)
+              (cons ":actual_sum" (hermes:inbox-sum t "collector"))
+              (cons ":expected_count" nn)
+              (cons ":actual_count" (hermes:inbox-count t "collector")))
+        (let ((msg (hermes:make-msg
+                     (string-append "w" (number->string i))
+                     "producer"
+                     "collector"
+                     "east"
+                     i)))
+          (let ((frame (hermes:wire-encode msg)))
+            (if (not frame)
+              (loop (+ i 1) delivered failed (+ refused 1) (+ expected (* f i)))
+              (let ((r (hermes:wire-send! t "producer" frame 16)))
+                (if (hermes:alist-ref ":ok" r #f)
+                  (loop (+ i 1) (+ delivered 1) failed refused (+ expected (* f i)))
+                  (if (hermes:alist-ref ":wire_ok" r #f)
+                    (loop (+ i 1) delivered (+ failed 1) refused (+ expected (* f i)))
+                    (loop (+ i 1) delivered failed (+ refused 1) (+ expected (* f i)))))))))))))
