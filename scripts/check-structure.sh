@@ -11,6 +11,12 @@ required=(
   "notes/escape-log.md"
   "notes/host-residuals.md"
   "prompts/GROK.md"
+  "lib/hermes-min.aura"
+  "lib/hermes-measure.aura"
+  "lib/hermes-topology.aura"
+  "examples/01-minimal-topology/main.aura"
+  "scripts/run-aura.sh"
+  "scripts/run-all.sh"
 )
 
 for f in "${required[@]}"; do

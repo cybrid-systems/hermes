@@ -1,0 +1,198 @@
+; examples/01-minimal-topology/main.aura
+;
+; Phase 1 denseness probe — pure-Aura multi-agent topology + baseline metrology.
+; Single host / single process. No wire, no multi-host, no mutation of routes.
+;
+; Axes: A (topology completeness) + F (metrology)
+;
+; Loop coverage:
+;   Bind / Specialize Topology  →  Run multi-agent workload  →
+;   Observe metrics  →  Verify correctness envelope
+;   (Mutation / failure injection / wire left to later probes)
+;
+; Topology under test (star / region):
+;   producer → router ─east→ worker-e (*2) → collector
+;                      ─west→ worker-w (*3) → collector
+;
+; Run: ./scripts/run-aura.sh examples/01-minimal-topology/main.aura
+;
+; Binding note: prefer let* over internal define for dependent values
+; (host internal-define behaves like simultaneous letrec).
+
+(require "hermes-min" all:)
+
+(hermes:stats-reset!)
+
+(display "=== Hermes 01-minimal-topology: pure-Aura multi-agent denseness ===")
+(newline)
+(display "hermes:min-version=")
+(display hermes:min-version)
+(display " topology-version=")
+(display hermes:topology-version)
+(newline)
+
+; Scale knob (CI-friendly; raise for soak)
+(define N-MSG 40)
+
+(display "workload: n-messages=")
+(display N-MSG)
+(newline)
+
+; ── 1. Build star topology ──
+(let* ((t (hermes:build-star-topology))
+       (agents (hermes:topo-agents t))
+       (routes (hermes:topo-routes t))
+       (n-agents (length agents))
+       (n-routes (length routes))
+       (complete (hermes:topo-complete? t))
+       (agents-ok (hermes:check-eq n-agents 5))
+       (routes-ok (hermes:check-eq n-routes 5))
+       (complete-ok (hermes:check-true complete)))
+  (display "topo: agents=")
+  (display n-agents)
+  (display " routes=")
+  (display n-routes)
+  (display " complete=")
+  (display complete)
+  (newline)
+
+  ; ── 2. Route table resolves east / west / default ──
+  (let* ((next-e (hermes:route-next t "router" "east"))
+         (next-w (hermes:route-next t "router" "west"))
+         (next-p (hermes:route-next t "producer" "east"))
+         (miss (hermes:route-next t "collector" "east"))
+         (route-e-ok (hermes:check-true (equal? next-e "worker-e")))
+         (route-w-ok (hermes:check-true (equal? next-w "worker-w")))
+         (route-p-ok (hermes:check-true (equal? next-p "router")))
+         (route-miss-ok (hermes:check-true (not miss))))
+    (display "routes: e=")
+    (display next-e)
+    (display " w=")
+    (display next-w)
+    (display " producer→")
+    (display next-p)
+    (display " collector-miss=")
+    (display miss)
+    (newline)
+
+    ; ── 3. Single-message smoke (east payload 7 → 14) ──
+    (let* ((smoke-msg (hermes:make-msg "smoke-e" "producer" "collector" "east" 7))
+           (smoke (hermes:send! t "producer" smoke-msg 16))
+           (smoke-ok (hermes:alist-ref ":ok" smoke #f))
+           (smoke-payload (hermes:alist-ref ":payload" smoke 0))
+           (smoke-hops (hermes:alist-ref ":hops" smoke 0))
+           (smoke-ok-c (hermes:check-true smoke-ok))
+           (smoke-pay-c (hermes:check-eq smoke-payload 14))
+           (smoke-hop-c (hermes:check-ge smoke-hops 3)))
+      (display "smoke east: ")
+      (write smoke)
+      (newline)
+
+      ; Clear collector inbox after smoke so workload sums are pure
+      (hash-set! (hermes:topo-inbox t) "collector" (quote ()))
+
+      ; ── 4. Multi-message region workload under metrology ──
+      (let* ((timed
+               (hermes:time-call
+                 (lambda () (hermes:run-region-workload! t N-MSG))
+                 N-MSG))
+             (wl (hermes:alist-ref ":result" timed #f))
+             (elapsed (hermes:alist-ref ":elapsed_ms" timed 0))
+             (delivered (hermes:alist-ref ":delivered" wl 0))
+             (failed (hermes:alist-ref ":failed" wl 0))
+             (want-sum (hermes:alist-ref ":expected_sum" wl 0))
+             (got-sum (hermes:alist-ref ":actual_sum" wl 0))
+             (want-cnt (hermes:alist-ref ":expected_count" wl 0))
+             (got-cnt (hermes:alist-ref ":actual_count" wl 0))
+             (del-ok (hermes:check-eq delivered N-MSG))
+             (fail-ok (hermes:check-eq failed 0))
+             (sum-ok (hermes:check-eq got-sum want-sum))
+             (cnt-ok (hermes:check-eq got-cnt N-MSG)))
+        (display "workload: ")
+        (write wl)
+        (newline)
+        (display "elapsed_ms=")
+        (display elapsed)
+        (newline)
+
+        ; ── 5. Topology snapshot baseline (dual-rollback scaffolding) ──
+        (let* ((snap (hermes:snapshot-topology t))
+               (snap-agents (hermes:alist-ref ":agents" snap #f))
+               (snap-ver (hermes:alist-ref ":topo_version" snap 0))
+               (snap-ok (hermes:check-true (list? snap-agents)))
+               (snap-ver-ok (hermes:check-eq snap-ver 1)))
+          (display "snapshot: agents=")
+          (display (length (if (list? snap-agents) snap-agents (quote ()))))
+          (display " version=")
+          (display snap-ver)
+          (newline)
+
+          ; ── Verdict ──
+          (display "stats: ")
+          (write (hermes:stats-alist))
+          (newline)
+
+          (let ((all-ok
+                  (and agents-ok routes-ok complete-ok
+                       route-e-ok route-w-ok route-p-ok route-miss-ok
+                       smoke-ok-c smoke-pay-c smoke-hop-c
+                       del-ok fail-ok sum-ok cnt-ok
+                       snap-ok snap-ver-ok
+                       (= (hermes:stats-ref "correctness_fail") 0)
+                       (>= (hermes:stats-ref "correctness_ok") 12)
+                       (= (hermes:stats-ref "messages_failed") 0)
+                       (>= (hermes:stats-ref "messages_delivered") N-MSG)
+                       (= (hermes:stats-ref "escapes") 0)
+                       (>= (hermes:stats-ref "agents_bound") 5)
+                       (>= (hermes:stats-ref "topo_builds") 1))))
+            (if all-ok
+              (begin
+                (display "PASS: pure-Aura multi-agent topology + metrology (escapes=0)")
+                (newline)
+                (display "RESULT pass example=01-minimal-topology escapes=0 delivered=")
+                (display delivered)
+                (display " elapsed_ms=")
+                (display elapsed)
+                (newline))
+              (begin
+                (display "FAIL: pure-Aura topology denseness probe")
+                (newline)
+                (display "RESULT fail example=01-minimal-topology")
+                (newline)
+                (display "  agents-ok=")
+                (display agents-ok)
+                (display " routes-ok=")
+                (display routes-ok)
+                (display " complete-ok=")
+                (display complete-ok)
+                (newline)
+                (display "  route-e=")
+                (display route-e-ok)
+                (display " route-w=")
+                (display route-w-ok)
+                (display " route-p=")
+                (display route-p-ok)
+                (display " miss=")
+                (display route-miss-ok)
+                (newline)
+                (display "  smoke-ok=")
+                (display smoke-ok-c)
+                (display " smoke-pay=")
+                (display smoke-pay-c)
+                (display " smoke-hop=")
+                (display smoke-hop-c)
+                (newline)
+                (display "  del=")
+                (display del-ok)
+                (display " fail=")
+                (display fail-ok)
+                (display " sum=")
+                (display sum-ok)
+                (display " cnt=")
+                (display cnt-ok)
+                (newline)
+                (display "  escapes=")
+                (display (hermes:stats-ref "escapes"))
+                (display " correctness_fail=")
+                (display (hermes:stats-ref "correctness_fail"))
+                (newline)))))))))

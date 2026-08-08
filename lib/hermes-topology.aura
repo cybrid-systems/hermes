@@ -1,0 +1,315 @@
+; lib/hermes-topology.aura — Axis A: pure-Aura multi-agent topology
+;
+; (require "hermes-topology" all:)
+;
+; Phase 1 surface: coordination topology as a first-class pure-Aura object.
+; Single host / single process. No wire / transport (those are Phase 4 E).
+;
+; Topology model:
+;   agents  — list of agent names (strings)
+;   routes  — list of (from region next)  ; region "" = default/any
+;   roles   — hash name → handler (lambda (msg) → msg-or-#f)
+;   inbox   — hash name → list of delivered payloads (collector sinks)
+;
+; Message:
+;   (id from to region payload hops)
+;   id/from/to/region strings; payload number; hops count.
+;
+; Delivery: hop-by-hop via route table until to == current or max hops.
+
+(export hermes:topology-version
+        hermes:msg-id hermes:msg-from hermes:msg-to
+        hermes:msg-region hermes:msg-payload hermes:msg-hops
+        hermes:make-msg hermes:msg-with-hops hermes:msg-with-from
+        hermes:make-topology
+        hermes:topo-agents hermes:topo-routes hermes:topo-roles hermes:topo-inbox
+        hermes:bind-role!
+        hermes:route-next
+        hermes:topo-complete?
+        hermes:deliver-once!
+        hermes:deliver!
+        hermes:send!
+        hermes:inbox-ref hermes:inbox-sum hermes:inbox-count
+        hermes:snapshot-topology
+        hermes:default-worker-east hermes:default-worker-west
+        hermes:default-router-pass hermes:default-collector
+        hermes:build-star-topology
+        hermes:run-region-workload!)
+
+(require "hermes-measure" all:)
+
+(define hermes:topology-version 1)
+
+; ── Message accessors ──
+
+(define (hermes:msg-id m) (car m))
+(define (hermes:msg-from m) (car (cdr m)))
+(define (hermes:msg-to m) (car (cdr (cdr m))))
+(define (hermes:msg-region m) (car (cdr (cdr (cdr m)))))
+(define (hermes:msg-payload m) (car (cdr (cdr (cdr (cdr m))))))
+(define (hermes:msg-hops m) (car (cdr (cdr (cdr (cdr (cdr m)))))))
+
+(define (hermes:make-msg id from to region payload)
+  (list id from to region payload 0))
+
+(define (hermes:msg-with-hops m hops)
+  (list (hermes:msg-id m)
+        (hermes:msg-from m)
+        (hermes:msg-to m)
+        (hermes:msg-region m)
+        (hermes:msg-payload m)
+        hops))
+
+(define (hermes:msg-with-from m from)
+  (list (hermes:msg-id m)
+        from
+        (hermes:msg-to m)
+        (hermes:msg-region m)
+        (hermes:msg-payload m)
+        (hermes:msg-hops m)))
+
+; ── Topology object: (agents routes roles-hash inbox-hash) ──
+
+(define (hermes:make-topology agents routes)
+  (hermes:stats-bump! "topo_builds")
+  (list agents routes (hash) (hash)))
+
+(define (hermes:topo-agents t) (car t))
+(define (hermes:topo-routes t) (car (cdr t)))
+(define (hermes:topo-roles t) (car (cdr (cdr t))))
+(define (hermes:topo-inbox t) (car (cdr (cdr (cdr t)))))
+
+(define (hermes:bind-role! t name handler)
+  (hash-set! (hermes:topo-roles t) name handler)
+  (hermes:stats-bump! "agents_bound")
+  name)
+
+; routes: list of (from region next)
+; Prefer exact region match; fall back to default region "".
+(define (hermes:route-next t from region)
+  (let ((rs (hermes:topo-routes t)))
+    (let loop ((xs rs) (fallback #f))
+      (if (null? xs)
+        (begin
+          (if fallback
+            (begin (hermes:stats-bump! "route_hits") fallback)
+            (begin (hermes:stats-bump! "route_miss") #f)))
+        (let ((r (car xs)))
+          (let ((r-from (car r))
+                (r-region (car (cdr r)))
+                (r-next (car (cdr (cdr r)))))
+            (if (equal? r-from from)
+              (if (equal? r-region region)
+                (begin (hermes:stats-bump! "route_hits") r-next)
+                (if (and (equal? r-region "") (not fallback))
+                  (loop (cdr xs) r-next)
+                  (loop (cdr xs) fallback)))
+              (loop (cdr xs) fallback))))))))
+
+; Every agent has a bound role; every non-sink agent has at least one route out.
+; sinks: agents that appear as route targets but need not route further
+;         (we treat "collector" name convention + any agent with no out-route
+;          as terminal if it has a role).
+(define (hermes:topo-complete? t)
+  (let ((agents (hermes:topo-agents t))
+        (roles (hermes:topo-roles t))
+        (routes (hermes:topo-routes t)))
+    (let loop ((xs agents))
+      (if (null? xs)
+        #t
+        (let ((name (car xs)))
+          (if (not (procedure? (hash-ref roles name #f)))
+            #f
+            (loop (cdr xs))))))))
+
+; Invoke agent handler at `at` with msg; returns rewritten msg or #f on fail.
+(define (hermes:deliver-once! t at msg)
+  (let ((handler (hash-ref (hermes:topo-roles t) at #f)))
+    (if (not (procedure? handler))
+      (begin
+        (hermes:stats-bump! "messages_failed")
+        #f)
+      (let ((out (handler msg)))
+        (if out
+          out
+          (begin
+            (hermes:stats-bump! "messages_failed")
+            #f))))))
+
+; Multi-hop deliver starting at `start` agent.
+; max-hops caps loops. Terminal when agent name == msg.to OR no further route
+; and agent is the intended sink (msg.to).
+; → alist :ok :hops :final_at :payload | :ok #f :reason
+(define (hermes:deliver! t start msg max-hops)
+  (let ((cap (if (and (number? max-hops) (> max-hops 0)) max-hops 16)))
+    (let loop ((at start) (m msg) (hops 0))
+      (if (> hops cap)
+        (begin
+          (hermes:stats-bump! "messages_failed")
+          (list (cons ":ok" #f)
+                (cons ":reason" "max-hops")
+                (cons ":hops" hops)
+                (cons ":final_at" at)))
+        (let ((m1 (hermes:deliver-once! t at m)))
+          (if (not m1)
+            (list (cons ":ok" #f)
+                  (cons ":reason" "handler-fail")
+                  (cons ":hops" hops)
+                  (cons ":final_at" at))
+            (let ((m2 (hermes:msg-with-hops m1 (+ hops 1)))
+                  (dest (hermes:msg-to m1)))
+              (if (equal? at dest)
+                (begin
+                  (hermes:stats-bump! "messages_delivered")
+                  (hermes:stats-set! "hops_total"
+                    (+ (hermes:stats-ref "hops_total") (+ hops 1)))
+                  (hermes:stats-set! "last_delivered"
+                    (+ 1 (hermes:stats-ref "last_delivered")))
+                  (hermes:stats-set! "last_hops" (+ hops 1))
+                  (list (cons ":ok" #t)
+                        (cons ":hops" (+ hops 1))
+                        (cons ":final_at" at)
+                        (cons ":payload" (hermes:msg-payload m2))))
+                (let ((next (hermes:route-next t at (hermes:msg-region m2))))
+                  (if (not next)
+                    (begin
+                      (hermes:stats-bump! "messages_failed")
+                      (list (cons ":ok" #f)
+                            (cons ":reason" "route-miss")
+                            (cons ":hops" (+ hops 1))
+                            (cons ":final_at" at)))
+                    (loop next
+                          (hermes:msg-with-from m2 at)
+                          (+ hops 1))))))))))))
+
+; Send a new message into topology at producer/start.
+(define (hermes:send! t start msg max-hops)
+  (hermes:stats-bump! "messages_sent")
+  (hermes:deliver! t start msg max-hops))
+
+(define (hermes:inbox-ref t name)
+  (let ((v (hash-ref (hermes:topo-inbox t) name #f)))
+    (if (list? v) v (quote ()))))
+
+(define (hermes:inbox-sum t name)
+  (let ((xs (hermes:inbox-ref t name)))
+    (let loop ((ys xs) (acc 0))
+      (if (null? ys)
+        acc
+        (let ((p (car ys)))
+          (loop (cdr ys) (+ acc (if (number? p) p 0))))))))
+
+(define (hermes:inbox-count t name)
+  (length (hermes:inbox-ref t name)))
+
+; Snapshot of topology structure (not live role closures): agents + routes +
+; per-agent inbox counts. For dual-rollback baseline in later phases.
+; → alist :agents :routes :inbox_counts :topo_version
+(define (hermes:snapshot-topology t)
+  (let ((agents (hermes:topo-agents t))
+        (routes (hermes:topo-routes t))
+        (inbox (hermes:topo-inbox t)))
+    (let loop ((xs agents) (counts (quote ())))
+      (if (null? xs)
+        (list (cons ":agents" agents)
+              (cons ":routes" routes)
+              (cons ":inbox_counts" (reverse counts))
+              (cons ":topo_version" hermes:topology-version))
+        (let ((n (car xs)))
+          (let ((c (length (hermes:inbox-ref t n))))
+            (loop (cdr xs) (cons (cons n c) counts))))))))
+
+; ── Default pure roles for star / region topology ──
+;
+; worker-east: payload' = payload * 2
+; worker-west: payload' = payload * 3
+; router: pass-through (routing done by table)
+; collector: append payload to inbox; msg.to stays collector
+
+(define (hermes:default-worker-east msg)
+  (list (hermes:msg-id msg)
+        (hermes:msg-from msg)
+        "collector"
+        (hermes:msg-region msg)
+        (* (hermes:msg-payload msg) 2)
+        (hermes:msg-hops msg)))
+
+(define (hermes:default-worker-west msg)
+  (list (hermes:msg-id msg)
+        (hermes:msg-from msg)
+        "collector"
+        (hermes:msg-region msg)
+        (* (hermes:msg-payload msg) 3)
+        (hermes:msg-hops msg)))
+
+(define (hermes:default-router-pass msg)
+  msg)
+
+; Collector closes over topology so it can write inbox.
+(define (hermes:default-collector t)
+  (lambda (msg)
+    (let ((inbox (hermes:topo-inbox t))
+          (payload (hermes:msg-payload msg)))
+      (let ((prev (hash-ref inbox "collector" #f)))
+        (let ((xs (if (list? prev) prev (quote ()))))
+          (hash-set! inbox "collector" (cons payload xs))
+          (list (hermes:msg-id msg)
+                (hermes:msg-from msg)
+                "collector"
+                (hermes:msg-region msg)
+                payload
+                (hermes:msg-hops msg)))))))
+
+; Star / region topology:
+;   producer → router ─east→ worker-e → collector
+;                      ─west→ worker-w → collector
+(define (hermes:build-star-topology)
+  (let ((agents (list "producer" "router" "worker-e" "worker-w" "collector"))
+        (routes (list
+                  (list "producer" "" "router")
+                  (list "router" "east" "worker-e")
+                  (list "router" "west" "worker-w")
+                  (list "worker-e" "" "collector")
+                  (list "worker-w" "" "collector"))))
+    (let ((t (hermes:make-topology agents routes)))
+      (hermes:bind-role! t "producer" hermes:default-router-pass)
+      (hermes:bind-role! t "router" hermes:default-router-pass)
+      (hermes:bind-role! t "worker-e" hermes:default-worker-east)
+      (hermes:bind-role! t "worker-w" hermes:default-worker-west)
+      (hermes:bind-role! t "collector" (hermes:default-collector t))
+      t)))
+
+; Run N messages alternating east/west with payloads 1..N.
+; East: payload i → 2i ; West: payload i → 3i
+; Expected sum = sum over i of (if east then 2i else 3i)
+; → alist :delivered :failed :expected_sum :actual_sum :expected_count
+(define (hermes:run-region-workload! t n)
+  (hermes:stats-bump! "workloads_run")
+  (hermes:stats-set! "last_delivered" 0)
+  (let ((nn (if (and (number? n) (> n 0)) n 0)))
+    (let loop ((i 1) (delivered 0) (failed 0) (expected 0))
+      (if (> i nn)
+        (list (cons ":delivered" delivered)
+              (cons ":failed" failed)
+              (cons ":expected_sum" expected)
+              (cons ":actual_sum" (hermes:inbox-sum t "collector"))
+              (cons ":expected_count" nn)
+              (cons ":actual_count" (hermes:inbox-count t "collector")))
+        (let ((region (if (= (modulo i 2) 1) "east" "west"))
+              (factor (if (= (modulo i 2) 1) 2 3)))
+          (let ((msg (hermes:make-msg
+                       (string-append "m" (number->string i))
+                       "producer"
+                       "collector"
+                       region
+                       i)))
+            (let ((r (hermes:send! t "producer" msg 16)))
+              (if (hermes:alist-ref ":ok" r #f)
+                (loop (+ i 1)
+                      (+ delivered 1)
+                      failed
+                      (+ expected (* factor i)))
+                (loop (+ i 1)
+                      delivered
+                      (+ failed 1)
+                      (+ expected (* factor i)))))))))))

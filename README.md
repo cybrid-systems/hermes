@@ -155,7 +155,7 @@ hermes/
 
 | Phase | Focus | Status |
 |-------|--------|--------|
-| **1** | Minimal pure-Aura multi-agent topology + baseline metrology (single host, process boundary) | planned |
+| **1** | Minimal pure-Aura multi-agent topology + baseline metrology (single host, process boundary) | **landed** (`examples/01-minimal-topology`) |
 | **2** | Mutation of routing / arbiter under controlled multi-agent load | planned |
 | **3** | Failure injection (message loss, node pause) + recovery denseness | planned |
 | **4** | Thin wire / transport \(E\) + schema-gated messages | planned |
@@ -178,13 +178,12 @@ Apache License 2.0 (same as Aura, Aether, Hephaestus, Prometheus)
 
 ## Status
 
-**Initialized.** First denseness probes to be landed.
+**Phase 1 landed.** Minimal pure-Aura multi-agent topology probe passes with escapes=0.
 
 ```bash
 ./scripts/check-structure.sh    # no binary required
-# later:
+./scripts/run-aura.sh examples/01-minimal-topology/main.aura
 ./scripts/run-all.sh
-./scripts/overnight-coord.sh
 ```
 
 Hermes continues Aura Unify’s constructive measurement program after Aether, Hephaestus and Prometheus — pressure-testing the same basis on the distributed multi-agent coordination subspace required for viral self-evolving distributed agents.

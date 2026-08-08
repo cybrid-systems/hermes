@@ -1,0 +1,34 @@
+; lib/hermes-min.aura — Phase 1 facade (Axes A + F)
+;
+; (require "hermes-min" all:)
+;
+; Thin re-export of measure + topology for denseness probes.
+; Later phases add hermes-mutate / hermes-wire / hermes-escape.
+
+(export hermes:stats hermes:stats-reset! hermes:stats-ref hermes:stats-bump!
+        hermes:stats-set! hermes:stats-alist hermes:alist-ref
+        hermes:time-call hermes:check-eq hermes:check-true hermes:check-ge
+        hermes:escape-note!
+        hermes:topology-version hermes:min-version
+        hermes:msg-id hermes:msg-from hermes:msg-to
+        hermes:msg-region hermes:msg-payload hermes:msg-hops
+        hermes:make-msg hermes:msg-with-hops hermes:msg-with-from
+        hermes:make-topology
+        hermes:topo-agents hermes:topo-routes hermes:topo-roles hermes:topo-inbox
+        hermes:bind-role!
+        hermes:route-next
+        hermes:topo-complete?
+        hermes:deliver-once!
+        hermes:deliver!
+        hermes:send!
+        hermes:inbox-ref hermes:inbox-sum hermes:inbox-count
+        hermes:snapshot-topology
+        hermes:default-worker-east hermes:default-worker-west
+        hermes:default-router-pass hermes:default-collector
+        hermes:build-star-topology
+        hermes:run-region-workload!)
+
+(require "hermes-measure" all:)
+(require "hermes-topology" all:)
+
+(define hermes:min-version 1)

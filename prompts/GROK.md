@@ -23,7 +23,8 @@ Primary objects under test:
 
 ## Current Status
 
-Repository initialized. Phase 1–5 planned. No probes landed yet.
+Phase 1 landed: `examples/01-minimal-topology` (Axes A+F, pure-Aura star/region
+topology, escapes=0). Phases 2–5 still planned (mutation, failure, wire, multi-host).
 
 ## When generating or reviewing code
 
