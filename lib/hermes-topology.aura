@@ -10,19 +10,25 @@
 ;   routes  — list of (from region next)  ; region "" = default/any
 ;   roles   — hash name → handler (lambda (msg) → msg-or-#f)
 ;   inbox   — hash name → list of delivered payloads (collector sinks)
+;   faults  — hash control plane (Phase 3):
+;               "paused" → hash name → 1
+;               "drops"  → hash name → remaining drop count
+;               "events" → list of event alists (newest first)
 ;
 ; Message:
 ;   (id from to region payload hops)
 ;   id/from/to/region strings; payload number; hops count.
 ;
 ; Delivery: hop-by-hop via route table until to == current or max hops.
+; Failure & partiality (Axis C) are first-class: pause / drop / log / recover.
 
 (export hermes:topology-version
         hermes:msg-id hermes:msg-from hermes:msg-to
         hermes:msg-region hermes:msg-payload hermes:msg-hops
         hermes:make-msg hermes:msg-with-hops hermes:msg-with-from
         hermes:make-topology
-        hermes:topo-agents hermes:topo-routes hermes:topo-roles hermes:topo-inbox
+        hermes:topo-agents hermes:topo-routes hermes:topo-roles
+        hermes:topo-inbox hermes:topo-faults
         hermes:bind-role!
         hermes:rebind-role!
         hermes:set-routes!
@@ -36,19 +42,31 @@
         hermes:inbox-ref hermes:inbox-sum hermes:inbox-count
         hermes:snapshot-topology
         hermes:restore-topology-routes!
+        hermes:fault-log!
+        hermes:fault-events
+        hermes:fault-event-count
+        hermes:fault-clear-events!
+        hermes:agent-paused?
+        hermes:pause-agent!
+        hermes:resume-agent!
+        hermes:inject-drops!
+        hermes:drops-remaining
+        hermes:consume-drop!
+        hermes:clear-faults!
         hermes:default-worker-east hermes:default-worker-west
         hermes:default-worker-scale
         hermes:default-router-pass hermes:default-collector
         hermes:build-star-topology
         hermes:star-routes-normal
         hermes:star-routes-swapped
+        hermes:star-routes-failover-east
         hermes:run-region-workload!
         hermes:run-region-workload-factors!
         hermes:run-east-workload!)
 
 (require "hermes-measure" all:)
 
-(define hermes:topology-version 2)
+(define hermes:topology-version 3)
 
 ; ── Message accessors ──
 
@@ -78,16 +96,118 @@
         (hermes:msg-payload m)
         (hermes:msg-hops m)))
 
-; ── Topology object: (agents routes roles-hash inbox-hash) ──
+; ── Topology object: (agents routes roles-hash inbox-hash faults-hash) ──
+; Faults hash fields inlined (avoid private free-helper residual).
 
 (define (hermes:make-topology agents routes)
   (hermes:stats-bump! "topo_builds")
-  (list agents routes (hash) (hash)))
+  (let ((faults (hash)))
+    (hash-set! faults "paused" (hash))
+    (hash-set! faults "drops" (hash))
+    (hash-set! faults "events" (quote ()))
+    (list agents routes (hash) (hash) faults)))
 
 (define (hermes:topo-agents t) (car t))
 (define (hermes:topo-routes t) (car (cdr t)))
 (define (hermes:topo-roles t) (car (cdr (cdr t))))
 (define (hermes:topo-inbox t) (car (cdr (cdr (cdr t)))))
+(define (hermes:topo-faults t) (car (cdr (cdr (cdr (cdr t))))))
+
+; ── Fault control plane (Axis C + E) ──
+
+(define (hermes:fault-log! t kind at msg-id region detail)
+  (let ((faults (hermes:topo-faults t)))
+    (let ((ev (list (cons ":kind" kind)
+                    (cons ":at" at)
+                    (cons ":msg_id" (if msg-id msg-id ""))
+                    (cons ":region" (if region region ""))
+                    (cons ":detail" (if detail detail "")))))
+      (let ((prev (hash-ref faults "events" #f)))
+        (let ((xs (if (list? prev) prev (quote ()))))
+          (hash-set! faults "events" (cons ev xs))
+          (hermes:stats-bump! "events_logged")
+          ev)))))
+
+(define (hermes:fault-events t)
+  (let ((v (hash-ref (hermes:topo-faults t) "events" #f)))
+    (if (list? v) v (quote ()))))
+
+(define (hermes:fault-event-count t)
+  (length (hermes:fault-events t)))
+
+(define (hermes:fault-clear-events! t)
+  (hash-set! (hermes:topo-faults t) "events" (quote ()))
+  0)
+
+(define (hermes:agent-paused? t name)
+  (let ((paused (hash-ref (hermes:topo-faults t) "paused" #f)))
+    (if (not paused)
+      #f
+      (let ((v (hash-ref paused name 0)))
+        (and (number? v) (> v 0))))))
+
+(define (hermes:pause-agent! t name)
+  (let ((paused (hash-ref (hermes:topo-faults t) "paused" #f)))
+    (if paused
+      (begin
+        (hash-set! paused name 1)
+        (hermes:stats-bump! "inject_pauses")
+        (hermes:fault-log! t "pause" name "" "" "injected")
+        name)
+      #f)))
+
+(define (hermes:resume-agent! t name)
+  (let ((paused (hash-ref (hermes:topo-faults t) "paused" #f)))
+    (if paused
+      (begin
+        (hash-set! paused name 0)
+        (hermes:stats-bump! "inject_resumes")
+        (hermes:stats-bump! "recoveries")
+        (hermes:fault-log! t "resume" name "" "" "recovered")
+        name)
+      #f)))
+
+(define (hermes:inject-drops! t name n)
+  (let ((drops (hash-ref (hermes:topo-faults t) "drops" #f))
+        (nn (if (and (number? n) (> n 0)) n 0)))
+    (if drops
+      (begin
+        (hash-set! drops name nn)
+        (hermes:stats-set! "inject_drops"
+          (+ (hermes:stats-ref "inject_drops") nn))
+        (hermes:fault-log! t "inject-drops" name "" ""
+          (string-append "n=" (number->string nn)))
+        nn)
+      0)))
+
+(define (hermes:drops-remaining t name)
+  (let ((drops (hash-ref (hermes:topo-faults t) "drops" #f)))
+    (if (not drops)
+      0
+      (let ((v (hash-ref drops name 0)))
+        (if (number? v) v 0)))))
+
+; Consume one scheduled drop at `name` if any remain. → #t if drop fired.
+; Public (exported via min) so deliver-once free-refs stay exported bindings.
+(define (hermes:consume-drop! t name)
+  (let ((n (hermes:drops-remaining t name)))
+    (if (> n 0)
+      (let ((drops (hash-ref (hermes:topo-faults t) "drops" #f)))
+        (hash-set! drops name (- n 1))
+        (hermes:stats-bump! "drops_consumed")
+        #t)
+      #f)))
+
+(define (hermes:clear-faults! t)
+  (let ((faults (hermes:topo-faults t)))
+    (let ((paused (hash))
+          (drops (hash)))
+      (hash-set! faults "paused" paused)
+      (hash-set! faults "drops" drops)
+      ; keep events for post-mortem observability unless caller clears them
+      (hermes:stats-bump! "recoveries")
+      (hermes:fault-log! t "clear-faults" "" "" "" "cleared")
+      #t)))
 
 (define (hermes:bind-role! t name handler)
   (hash-set! (hermes:topo-roles t) name handler)
@@ -158,19 +278,37 @@
             #f
             (loop (cdr xs))))))))
 
-; Invoke agent handler at `at` with msg; returns rewritten msg or #f on fail.
+; Invoke agent handler at `at` with msg.
+; → rewritten msg | 'paused | 'drop | #f (handler fail / missing)
 (define (hermes:deliver-once! t at msg)
-  (let ((handler (hash-ref (hermes:topo-roles t) at #f)))
-    (if (not (procedure? handler))
+  (if (hermes:agent-paused? t at)
+    (begin
+      (hermes:stats-bump! "messages_failed")
+      (hermes:stats-bump! "pause_hits")
+      (hermes:fault-log! t "pause-hit" at
+        (hermes:msg-id msg) (hermes:msg-region msg) "agent-paused")
+      'paused)
+    (if (hermes:consume-drop! t at)
       (begin
         (hermes:stats-bump! "messages_failed")
-        #f)
-      (let ((out (handler msg)))
-        (if out
-          out
+        (hermes:fault-log! t "drop" at
+          (hermes:msg-id msg) (hermes:msg-region msg) "injected-drop")
+        'drop)
+      (let ((handler (hash-ref (hermes:topo-roles t) at #f)))
+        (if (not (procedure? handler))
           (begin
             (hermes:stats-bump! "messages_failed")
-            #f))))))
+            (hermes:fault-log! t "no-handler" at
+              (hermes:msg-id msg) (hermes:msg-region msg) "missing-role")
+            #f)
+          (let ((out (handler msg)))
+            (if out
+              out
+              (begin
+                (hermes:stats-bump! "messages_failed")
+                (hermes:fault-log! t "handler-fail" at
+                  (hermes:msg-id msg) (hermes:msg-region msg) "handler-#f")
+                #f))))))))
 
 ; Multi-hop deliver starting at `start` agent.
 ; max-hops caps loops. Terminal when agent name == msg.to OR no further route
@@ -182,41 +320,57 @@
       (if (> hops cap)
         (begin
           (hermes:stats-bump! "messages_failed")
+          (hermes:fault-log! t "max-hops" at
+            (hermes:msg-id m) (hermes:msg-region m) "cap")
           (list (cons ":ok" #f)
                 (cons ":reason" "max-hops")
                 (cons ":hops" hops)
                 (cons ":final_at" at)))
         (let ((m1 (hermes:deliver-once! t at m)))
-          (if (not m1)
-            (list (cons ":ok" #f)
-                  (cons ":reason" "handler-fail")
-                  (cons ":hops" hops)
-                  (cons ":final_at" at))
-            (let ((m2 (hermes:msg-with-hops m1 (+ hops 1)))
-                  (dest (hermes:msg-to m1)))
-              (if (equal? at dest)
-                (begin
-                  (hermes:stats-bump! "messages_delivered")
-                  (hermes:stats-set! "hops_total"
-                    (+ (hermes:stats-ref "hops_total") (+ hops 1)))
-                  (hermes:stats-set! "last_delivered"
-                    (+ 1 (hermes:stats-ref "last_delivered")))
-                  (hermes:stats-set! "last_hops" (+ hops 1))
-                  (list (cons ":ok" #t)
-                        (cons ":hops" (+ hops 1))
-                        (cons ":final_at" at)
-                        (cons ":payload" (hermes:msg-payload m2))))
-                (let ((next (hermes:route-next t at (hermes:msg-region m2))))
-                  (if (not next)
-                    (begin
-                      (hermes:stats-bump! "messages_failed")
-                      (list (cons ":ok" #f)
-                            (cons ":reason" "route-miss")
-                            (cons ":hops" (+ hops 1))
-                            (cons ":final_at" at)))
-                    (loop next
-                          (hermes:msg-with-from m2 at)
-                          (+ hops 1))))))))))))
+          (cond
+            ((eq? m1 'paused)
+              (list (cons ":ok" #f)
+                    (cons ":reason" "paused")
+                    (cons ":hops" hops)
+                    (cons ":final_at" at)))
+            ((eq? m1 'drop)
+              (list (cons ":ok" #f)
+                    (cons ":reason" "drop")
+                    (cons ":hops" hops)
+                    (cons ":final_at" at)))
+            ((not m1)
+              (list (cons ":ok" #f)
+                    (cons ":reason" "handler-fail")
+                    (cons ":hops" hops)
+                    (cons ":final_at" at)))
+            (else
+              (let ((m2 (hermes:msg-with-hops m1 (+ hops 1)))
+                    (dest (hermes:msg-to m1)))
+                (if (equal? at dest)
+                  (begin
+                    (hermes:stats-bump! "messages_delivered")
+                    (hermes:stats-set! "hops_total"
+                      (+ (hermes:stats-ref "hops_total") (+ hops 1)))
+                    (hermes:stats-set! "last_delivered"
+                      (+ 1 (hermes:stats-ref "last_delivered")))
+                    (hermes:stats-set! "last_hops" (+ hops 1))
+                    (list (cons ":ok" #t)
+                          (cons ":hops" (+ hops 1))
+                          (cons ":final_at" at)
+                          (cons ":payload" (hermes:msg-payload m2))))
+                  (let ((next (hermes:route-next t at (hermes:msg-region m2))))
+                    (if (not next)
+                      (begin
+                        (hermes:stats-bump! "messages_failed")
+                        (hermes:fault-log! t "route-miss" at
+                          (hermes:msg-id m2) (hermes:msg-region m2) "no-next")
+                        (list (cons ":ok" #f)
+                              (cons ":reason" "route-miss")
+                              (cons ":hops" (+ hops 1))
+                              (cons ":final_at" at)))
+                      (loop next
+                            (hermes:msg-with-from m2 at)
+                            (+ hops 1)))))))))))))
 
 ; Send a new message into topology at producer/start.
 (define (hermes:send! t start msg max-hops)
@@ -239,21 +393,28 @@
   (length (hermes:inbox-ref t name)))
 
 ; Snapshot of topology structure (not live role closures): agents + routes +
-; per-agent inbox counts. For dual-rollback baseline.
-; → alist :agents :routes :inbox_counts :topo_version
+; per-agent inbox counts + fault observability fields. Dual-rollback baseline.
+; → alist :agents :routes :inbox_counts :paused :event_count :topo_version
 (define (hermes:snapshot-topology t)
   (let ((agents (hermes:topo-agents t))
         (routes (hermes:copy-routes (hermes:topo-routes t)))
         (inbox (hermes:topo-inbox t)))
-    (let loop ((xs agents) (counts (quote ())))
+    (let loop ((xs agents) (counts (quote ())) (paused-acc (quote ())))
       (if (null? xs)
         (list (cons ":agents" agents)
               (cons ":routes" routes)
               (cons ":inbox_counts" (reverse counts))
+              (cons ":paused" (reverse paused-acc))
+              (cons ":event_count" (hermes:fault-event-count t))
               (cons ":topo_version" hermes:topology-version))
         (let ((n (car xs)))
-          (let ((c (length (hermes:inbox-ref t n))))
-            (loop (cdr xs) (cons (cons n c) counts))))))))
+          (let ((c (length (hermes:inbox-ref t n)))
+                (p (if (hermes:agent-paused? t n) 1 0)))
+            (loop (cdr xs)
+                  (cons (cons n c) counts)
+                  (if (= p 1)
+                    (cons n paused-acc)
+                    paused-acc))))))))
 
 ; Restore route table from a topology snapshot alist or a raw routes list.
 (define (hermes:restore-topology-routes! t snap-or-routes)
@@ -319,6 +480,14 @@
     (list "worker-e" "" "collector")
     (list "worker-w" "" "collector")))
 
+; Failover: east traffic goes to worker-w (*3) while worker-e is down.
+(define (hermes:star-routes-failover-east)
+  (list
+    (list "producer" "" "router")
+    (list "router" "east" "worker-w")
+    (list "router" "west" "worker-w")
+    (list "worker-e" "" "collector")
+    (list "worker-w" "" "collector")))
 ; Collector closes over topology so it can write inbox.
 (define (hermes:default-collector t)
   (lambda (msg)

@@ -1,6 +1,6 @@
 # Denseness Report — \(S_{\mathrm{Hermes}}\)
 
-**Status**: Phase 1–2 probes landed (partial evidence; full judgment deferred)
+**Status**: Phase 1–3 probes landed (partial evidence; full judgment deferred)
 
 ## Summary Judgment
 
@@ -9,43 +9,46 @@
 | Phase | Result | Axes |
 |-------|--------|------|
 | 1 Minimal topology + metrology | **pass**, escapes=0 | A F |
-| 2 Mutation of routing / roles / AST coordination policy under load | **pass**, escapes=0 | A B F |
+| 2 Mutation of routing / roles / AST policy under load | **pass**, escapes=0 | A B F |
+| 3 Failure injection + recovery | **pass**, escapes=0 | C E F |
 
-Phase 2 shows that **coordination topology and policy** can be hot-mutated (route table, agent roles, AST `coord-scale`) under multi-agent load with dual rollback (topology routes + AST snapshot), still pure Aura on the evolvable core.
+Phase 3 shows **failure & partiality as first-class semantics** on the pure-Aura coordination path: agent pause, message drop, failover routing, and full recover — with an observable fault event log (Axis E) and zero escapes.
 
-Axes C–E (failure/partiality, wire, cross-node observability) remain unproven.  
-`std/orchestrator` is still avoided (host [aura#2767](https://github.com/cybrid-systems/aura/issues/2767)).
+Axes D (wire/transport \(E\)) and multi-host soak remain open.  
+`std/orchestrator` still avoided ([aura#2767](https://github.com/cybrid-systems/aura/issues/2767)).
 
 ## Probe Results
 
 | Probe | Axes | Result | Notes |
 |-------|------|--------|-------|
 | 01-minimal-topology | A F | **pass** | Star/region; N=40; escapes=0 |
-| 02-mutation-routing | A B F | **pass** | Route swap, role rebind, poison→restore, AST rebind+rollback; escapes=0 |
+| 02-mutation-routing | A B F | **pass** | Route/role/AST mutation + dual rollback |
+| 03-failure-recovery | C E F | **pass** | pause/drop/failover/recover + event log |
 
-### 02-mutation-routing detail
+### 03-failure-recovery detail
 
-| Round | Mutation | Verify |
-|-------|----------|--------|
-| R0 | baseline | east*2 / west*3 sum |
-| R1 | `set-routes!` swap east↔west workers | inverted factors under load |
-| R2 | `rebind-role!` worker-e → *5 | east-only batch |
-| R3 | poison routes → `restore-topology-routes!` | dual rollback of route baseline |
-| R4 | `rebind-safe` `coord-scale` *2→*4; poison *99; AST restore | workload + sample after restore |
+| Round | Failure / recovery | Verify |
+|-------|--------------------|--------|
+| R0 | baseline | east*2 OK |
+| R1 | pause `worker-e` | delivered=0, `:reason paused` |
+| R2 | resume | full recover |
+| R3 | inject N drops at `router` | failed=N, delivered=batch−N |
+| R4 | pause + `failover-east!` | east via worker-w *3 |
+| R5 | `recover-normal!` | baseline OK; event log denseness |
 
 - **Escapes on coordination path**: **0**
-- **Out of scope**: failure injection (Phase 3), wire (Phase 4), multi-host (Phase 5)
+- **Out of scope**: wire (Phase 4), multi-host (Phase 5)
 
 ## Escape Summary
 
-See [`escape-log.md`](escape-log.md) — empty for Phase 1–2 core paths.
+See [`escape-log.md`](escape-log.md) — empty for Phase 1–3 core paths.
 
 ## Host residuals
 
-See [`host-residuals.md`](host-residuals.md) — aura#2766–#2769.
+See [`host-residuals.md`](host-residuals.md) — aura#2766–#2769.  
+Phase 3 note: private non-exported helpers that free-ref other private helpers can still break; prefer exported bindings or inlined bodies (same discipline as #2766 class).
 
 ## Next Actions
 
-1. Phase 3: failure injection (drop / pause) + recovery denseness (Axis C).
-2. Phase 4: thin schema-gated wire \(E\) (Axis D).
-3. Phase 5: multi-host soak + denseness judgment.
+1. Phase 4: thin schema-gated wire \(E\) (Axis D).
+2. Phase 5: multi-host soak + denseness judgment.

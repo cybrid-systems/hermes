@@ -13,8 +13,9 @@ on \(S_{\mathrm{Hermes}}\).
 ## Hermes workarounds (until host fix)
 
 1. **Form order in span libs**: always `(export …)` before `(require …)` when exports free-ref module cells (Hermes lib already follows this on the working path).
-2. **Do not require `std/orchestrator`** for Phase 1 denseness evidence; pure list/hash topology in `hermes-topology.aura`.
-3. **Runner**:
+2. **Do not require `std/orchestrator`** for denseness evidence; pure list/hash topology in `hermes-topology.aura`.
+3. **Private helpers**: prefer inlined bodies or **exported** bindings when one define free-refs another in the same module (Phase 3: `make-faults-hash` unbound until inlined — same class as #2766).
+4. **Runner**:
    ```bash
    export AURA_PATH="$AURA_LIB:$HERMES_LIB"
    export AURA_SANDBOX=off

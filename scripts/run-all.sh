@@ -7,6 +7,7 @@ cd "$ROOT"
 PROBES=(
   01-minimal-topology
   02-mutation-routing
+  03-failure-recovery
 )
 
 pass=0

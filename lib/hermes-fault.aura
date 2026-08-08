@@ -1,0 +1,44 @@
+; lib/hermes-fault.aura — Axis C/E: failure injection + recovery policies
+;
+; (require "hermes-fault" all:)
+;
+; Pure-Aura recovery policies over hermes-topology fault control plane.
+; Form order: export BEFORE require (host #2766).
+
+(export hermes:fault-version
+        hermes:count-events-kind
+        hermes:failover-east!
+        hermes:recover-normal!)
+
+(require "hermes-measure" all:)
+(require "hermes-topology" all:)
+
+(define hermes:fault-version 1)
+
+; Count fault events whose :kind equals `kind` (string).
+(define (hermes:count-events-kind t kind)
+  (let ((xs (hermes:fault-events t)))
+    (let loop ((ys xs) (n 0))
+      (if (null? ys)
+        n
+        (let ((ev (car ys)))
+          (if (equal? (hermes:alist-ref ":kind" ev "") kind)
+            (loop (cdr ys) (+ n 1))
+            (loop (cdr ys) n)))))))
+
+; Recovery policy: pause worker-e path is dead → route east (and west) via worker-w.
+; Does not resume worker-e; that is a separate recover step.
+(define (hermes:failover-east! t)
+  (hermes:set-routes! t (hermes:star-routes-failover-east))
+  (hermes:stats-bump! "failovers")
+  (hermes:fault-log! t "failover" "router" "" "east" "east→worker-w")
+  #t)
+
+; Full recovery: clear pauses/drops, restore normal routes, log recovery.
+; Does not clear event log (Axis E post-mortem).
+(define (hermes:recover-normal! t)
+  (hermes:clear-faults! t)
+  (hermes:set-routes! t (hermes:star-routes-normal))
+  (hermes:stats-bump! "recoveries")
+  (hermes:fault-log! t "recover-normal" "" "" "" "routes+faults")
+  #t)
