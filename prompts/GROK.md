@@ -23,8 +23,11 @@ Primary objects under test:
 
 ## Current Status
 
-Phase 1 landed: `examples/01-minimal-topology` (Axes A+F, pure-Aura star/region
-topology, escapes=0). Phases 2–5 still planned (mutation, failure, wire, multi-host).
+Phase 1–2 landed:
+- `01-minimal-topology` (A+F) — pure-Aura star/region, escapes=0
+- `02-mutation-routing` (A+B+F) — hot routes/roles/AST coord policy + dual rollback
+
+Phases 3–5 still planned (failure, wire, multi-host). Avoid `std/orchestrator` until aura#2767.
 
 ## When generating or reviewing code
 

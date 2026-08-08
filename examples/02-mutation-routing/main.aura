@@ -1,0 +1,290 @@
+; examples/02-mutation-routing/main.aura
+;
+; Phase 2 denseness probe — mutation of routing / coordination policy under load.
+;
+; Axes: A (topology) + B (mutation of coordination) + F (metrology)
+;
+; Scenario:
+;   R0: baseline star topology workload (east*2, west*3)
+;   R1: hot set-routes! swap east/west workers; workload under inverted factors
+;   R2: hot rebind-role! worker-e to *5; east-only batch
+;   R3: dual rollback — poison routes → restore topology snapshot → still correct
+;   R4: AST rebind of coord-scale used by worker-e (mutate:rebind) + rollback
+;
+; No std/orchestrator (host #2767). Coordination stays pure Aura.
+;
+; Run: ./scripts/run-aura.sh examples/02-mutation-routing/main.aura
+;
+; Binding note: prefer let* for dependent values.
+
+(require "hermes-min" all:)
+
+(hermes:stats-reset!)
+
+(display "=== Hermes 02-mutation-routing: coordination mutation under load ===")
+(newline)
+(display "hermes:min-version=")
+(display hermes:min-version)
+(display " topology-version=")
+(display hermes:topology-version)
+(display " mutate-version=")
+(display hermes:mutate-version)
+(newline)
+
+(define N-BASE 20)
+(define N-EAST 12)
+
+(display "knobs: n-base=")
+(display N-BASE)
+(display " n-east=")
+(display N-EAST)
+(newline)
+(display "safety-ok=")
+(display (hermes:safety-ok?))
+(newline)
+
+(let* ((t (hermes:build-star-topology))
+       (complete0 (hermes:check-true (hermes:topo-complete? t))))
+
+  ; ── R0: baseline ──
+  (hermes:clear-inbox! t "collector")
+  (let* ((r0 (hermes:run-region-workload! t N-BASE))
+         (r0-del (hermes:check-eq (hermes:alist-ref ":delivered" r0 0) N-BASE))
+         (r0-fail (hermes:check-eq (hermes:alist-ref ":failed" r0 -1) 0))
+         (r0-sum (hermes:check-eq (hermes:alist-ref ":actual_sum" r0 0)
+                                  (hermes:alist-ref ":expected_sum" r0 -1)))
+         (r0-ok (and r0-del r0-fail r0-sum)))
+    (display "R0 baseline: ")
+    (write r0)
+    (newline)
+    (display "R0 ok=")
+    (display r0-ok)
+    (newline)
+
+    ; ── R1: hot swap routes east↔west ──
+    ; After swap: east region hits worker-w (*3), west hits worker-e (*2)
+    (hermes:clear-inbox! t "collector")
+    (hermes:set-routes! t (hermes:star-routes-swapped))
+    (let* ((next-e (hermes:route-next t "router" "east"))
+           (next-w (hermes:route-next t "router" "west"))
+           (route-e-ok (hermes:check-true (equal? next-e "worker-w")))
+           (route-w-ok (hermes:check-true (equal? next-w "worker-e")))
+           (r1 (hermes:run-region-workload-factors! t N-BASE 3 2))
+           (r1-del (hermes:check-eq (hermes:alist-ref ":delivered" r1 0) N-BASE))
+           (r1-fail (hermes:check-eq (hermes:alist-ref ":failed" r1 -1) 0))
+           (r1-sum (hermes:check-eq (hermes:alist-ref ":actual_sum" r1 0)
+                                    (hermes:alist-ref ":expected_sum" r1 -1)))
+           (r1-ok (and route-e-ok route-w-ok r1-del r1-fail r1-sum)))
+      (display "R1 swapped routes e→")
+      (display next-e)
+      (display " w→")
+      (display next-w)
+      (newline)
+      (display "R1 workload: ")
+      (write r1)
+      (newline)
+      (display "R1 ok=")
+      (display r1-ok)
+      (newline)
+
+      ; Restore normal routes for later rounds
+      (hermes:set-routes! t (hermes:star-routes-normal))
+      (hermes:rebind-role! t "worker-e" hermes:default-worker-east)
+      (hermes:rebind-role! t "worker-w" hermes:default-worker-west)
+
+      ; ── R2: hot rebind worker-e role to *5 ──
+      (hermes:clear-inbox! t "collector")
+      (hermes:rebind-role! t "worker-e"
+        (lambda (msg)
+          (list (hermes:msg-id msg)
+                (hermes:msg-from msg)
+                "collector"
+                (hermes:msg-region msg)
+                (* (hermes:msg-payload msg) 5)
+                (hermes:msg-hops msg))))
+      (let* ((r2 (hermes:run-east-workload! t N-EAST 5))
+             (r2-del (hermes:check-eq (hermes:alist-ref ":delivered" r2 0) N-EAST))
+             (r2-fail (hermes:check-eq (hermes:alist-ref ":failed" r2 -1) 0))
+             (r2-sum (hermes:check-eq (hermes:alist-ref ":actual_sum" r2 0)
+                                      (hermes:alist-ref ":expected_sum" r2 -1)))
+             (r2-ok (and r2-del r2-fail r2-sum)))
+        (display "R2 role rebind *5: ")
+        (write r2)
+        (newline)
+        (display "R2 ok=")
+        (display r2-ok)
+        (newline)
+
+        ; restore worker-e
+        (hermes:rebind-role! t "worker-e" hermes:default-worker-east)
+
+        ; ── R3: dual rollback (topology routes) ──
+        (hermes:clear-inbox! t "collector")
+        (let* ((snap-topo (hermes:snapshot-topology t))
+               (snap-routes-ok
+                 (hermes:check-true
+                   (equal? (hermes:route-next t "router" "east") "worker-e")))
+               (poison-routes
+                 (list
+                   (list "producer" "" "router")
+                   (list "router" "east" "nowhere")
+                   (list "router" "west" "worker-w")
+                   (list "worker-e" "" "collector")
+                   (list "worker-w" "" "collector"))))
+          (hermes:set-routes! t poison-routes)
+          (let* ((poison (hermes:run-east-workload! t 4 2))
+                 (poison-failed (hermes:alist-ref ":failed" poison 0))
+                 (poison-ok (hermes:check-ge poison-failed 1))
+                 (restored (hermes:restore-topology-routes! t snap-topo))
+                 (restored-route
+                   (hermes:check-true
+                     (equal? (hermes:route-next t "router" "east") "worker-e"))))
+            (hermes:clear-inbox! t "collector")
+            (let* ((r3 (hermes:run-region-workload! t N-BASE))
+                   (r3-del (hermes:check-eq (hermes:alist-ref ":delivered" r3 0) N-BASE))
+                   (r3-fail (hermes:check-eq (hermes:alist-ref ":failed" r3 -1) 0))
+                   (r3-sum (hermes:check-eq (hermes:alist-ref ":actual_sum" r3 0)
+                                            (hermes:alist-ref ":expected_sum" r3 -1)))
+                   (r3-ok (and snap-routes-ok poison-ok restored restored-route
+                               r3-del r3-fail r3-sum)))
+              (display "R3 poison failed=")
+              (display poison-failed)
+              (display " restore=")
+              (display restored)
+              (display " post: ")
+              (write r3)
+              (newline)
+              (display "R3 ok=")
+              (display r3-ok)
+              (newline)
+
+              ; ── R4: AST rebind of coord-scale (coordination policy) ──
+              (let* ((installed
+                       (hermes:install-source
+                         "(define coord-scale (lambda (x) (* x 2)))"))
+                     (inst-ok (hermes:check-true installed)))
+                (if (not installed)
+                  (begin
+                    (display "R4 FAIL: install coord-scale")
+                    (newline)
+                    (display "RESULT fail example=02-mutation-routing")
+                    (newline))
+                  (begin
+                    (hermes:rebind-role! t "worker-e" hermes:default-worker-scale)
+                    (hermes:clear-inbox! t "collector")
+                    (let* ((pre (hermes:run-east-workload! t N-EAST 2))
+                           (pre-ok
+                             (and (hermes:check-eq (hermes:alist-ref ":delivered" pre 0) N-EAST)
+                                  (hermes:check-eq (hermes:alist-ref ":failed" pre -1) 0)
+                                  (hermes:check-eq (hermes:alist-ref ":actual_sum" pre 0)
+                                                   (hermes:alist-ref ":expected_sum" pre -1))))
+                           (r4 (hermes:rebind-safe
+                                 "coord-scale"
+                                 "(lambda (x) (* x 4))"
+                                 "r4-coord-scale-x4"))
+                           (r4-applied (hermes:check-true
+                                         (eq? (hermes:alist-ref ":ok" r4 #f) #t)))
+                           (sample-ok (hermes:check-eq (coord-scale 7) 28)))
+                      (hermes:clear-inbox! t "collector")
+                      (let* ((post (hermes:run-east-workload! t N-EAST 4))
+                             (post-ok
+                               (and (hermes:check-eq (hermes:alist-ref ":delivered" post 0) N-EAST)
+                                    (hermes:check-eq (hermes:alist-ref ":failed" post -1) 0)
+                                    (hermes:check-eq (hermes:alist-ref ":actual_sum" post 0)
+                                                     (hermes:alist-ref ":expected_sum" post -1))))
+                             ; Baseline AFTER successful *4 rebind (not the pre-rebind snap inside r4)
+                             (snap-x4 (hermes:snapshot "r4-after-x4"))
+                             (snap-x4-ok (hermes:check-ge snap-x4 0))
+                             (bad (hermes:rebind-safe
+                                    "coord-scale"
+                                    "(lambda (x) (* x 99))"
+                                    "r4-poison"))
+                             (bad-ok (hermes:check-true
+                                       (eq? (hermes:alist-ref ":ok" bad #f) #t)))
+                             (poison-sample (coord-scale 7))
+                             (ast-restored (hermes:restore snap-x4))
+                             (after-sample (coord-scale 7))
+                             (sample-restored (hermes:check-eq after-sample 28)))
+                        (hermes:clear-inbox! t "collector")
+                        (let* ((after (hermes:run-east-workload! t N-EAST 4))
+                               (after-ok
+                                 (and (hermes:check-eq (hermes:alist-ref ":delivered" after 0) N-EAST)
+                                      (hermes:check-eq (hermes:alist-ref ":failed" after -1) 0)
+                                      (hermes:check-eq (hermes:alist-ref ":actual_sum" after 0)
+                                                       (hermes:alist-ref ":expected_sum" after -1))))
+                               (r4-ok (and inst-ok pre-ok r4-applied sample-ok
+                                           post-ok snap-x4-ok bad-ok
+                                           (= poison-sample 693)
+                                           ast-restored sample-restored after-ok)))
+                          (display "R4 install+pre: ")
+                          (write pre)
+                          (newline)
+                          (display "R4 rebind: ")
+                          (write r4)
+                          (newline)
+                          (display "R4 post *4: ")
+                          (write post)
+                          (newline)
+                          (display "R4 poison sample=")
+                          (display poison-sample)
+                          (display " restore=")
+                          (display ast-restored)
+                          (display " after-sample=")
+                          (display after-sample)
+                          (newline)
+                          (display "R4 after workload: ")
+                          (write after)
+                          (newline)
+                          (display "R4 ok=")
+                          (display r4-ok)
+                          (newline)
+
+                          (display "stats: ")
+                          (write (hermes:stats-alist))
+                          (newline)
+                          (display "safety-ok final=")
+                          (display (hermes:safety-ok?))
+                          (newline)
+
+                          (let ((all-ok
+                                  (and complete0 r0-ok r1-ok r2-ok r3-ok r4-ok
+                                       (hermes:safety-ok?)
+                                       (= (hermes:stats-ref "correctness_fail") 0)
+                                       (= (hermes:stats-ref "escapes") 0)
+                                       (>= (hermes:stats-ref "route_rebinds") 3)
+                                       (>= (hermes:stats-ref "role_rebinds") 3)
+                                       (>= (hermes:stats-ref "mut_ok") 2)
+                                       (>= (hermes:stats-ref "rollback_ok") 1))))
+                            (if all-ok
+                              (begin
+                                (display "PASS: routing/role/AST coordination mutation under load (escapes=0)")
+                                (newline)
+                                (display "RESULT pass example=02-mutation-routing escapes=0")
+                                (newline))
+                              (begin
+                                (display "FAIL: coordination mutation denseness probe")
+                                (newline)
+                                (display "RESULT fail example=02-mutation-routing")
+                                (newline)
+                                (display "  complete0=")
+                                (display complete0)
+                                (display " r0=")
+                                (display r0-ok)
+                                (display " r1=")
+                                (display r1-ok)
+                                (display " r2=")
+                                (display r2-ok)
+                                (display " r3=")
+                                (display r3-ok)
+                                (display " r4=")
+                                (display r4-ok)
+                                (newline)
+                                (display "  escapes=")
+                                (display (hermes:stats-ref "escapes"))
+                                (display " correctness_fail=")
+                                (display (hermes:stats-ref "correctness_fail"))
+                                (display " mut_ok=")
+                                (display (hermes:stats-ref "mut_ok"))
+                                (display " route_rebinds=")
+                                (display (hermes:stats-ref "route_rebinds"))
+                                (newline)))))))))))))))))

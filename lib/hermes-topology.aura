@@ -24,6 +24,10 @@
         hermes:make-topology
         hermes:topo-agents hermes:topo-routes hermes:topo-roles hermes:topo-inbox
         hermes:bind-role!
+        hermes:rebind-role!
+        hermes:set-routes!
+        hermes:copy-routes
+        hermes:clear-inbox!
         hermes:route-next
         hermes:topo-complete?
         hermes:deliver-once!
@@ -31,14 +35,20 @@
         hermes:send!
         hermes:inbox-ref hermes:inbox-sum hermes:inbox-count
         hermes:snapshot-topology
+        hermes:restore-topology-routes!
         hermes:default-worker-east hermes:default-worker-west
+        hermes:default-worker-scale
         hermes:default-router-pass hermes:default-collector
         hermes:build-star-topology
-        hermes:run-region-workload!)
+        hermes:star-routes-normal
+        hermes:star-routes-swapped
+        hermes:run-region-workload!
+        hermes:run-region-workload-factors!
+        hermes:run-east-workload!)
 
 (require "hermes-measure" all:)
 
-(define hermes:topology-version 1)
+(define hermes:topology-version 2)
 
 ; ── Message accessors ──
 
@@ -83,6 +93,32 @@
   (hash-set! (hermes:topo-roles t) name handler)
   (hermes:stats-bump! "agents_bound")
   name)
+
+; Hot rebind of an existing agent role (does not re-count agents_bound).
+(define (hermes:rebind-role! t name handler)
+  (hash-set! (hermes:topo-roles t) name handler)
+  (hermes:stats-bump! "role_rebinds")
+  name)
+
+; Hot replace of the route table (first-class coordination mutation).
+; Topology layout: (agents routes roles inbox) — mutate routes via set-car! on cdr.
+(define (hermes:set-routes! t routes)
+  (set-car! (cdr t) routes)
+  (hermes:stats-bump! "route_rebinds")
+  routes)
+
+; Shallow copy of route list (each edge is a 3-list) for dual-rollback baseline.
+(define (hermes:copy-routes routes)
+  (let loop ((xs routes) (acc (quote ())))
+    (if (null? xs)
+      (reverse acc)
+      (let ((r (car xs)))
+        (loop (cdr xs)
+              (cons (list (car r) (car (cdr r)) (car (cdr (cdr r)))) acc))))))
+
+(define (hermes:clear-inbox! t name)
+  (hash-set! (hermes:topo-inbox t) name (quote ()))
+  0)
 
 ; routes: list of (from region next)
 ; Prefer exact region match; fall back to default region "".
@@ -203,11 +239,11 @@
   (length (hermes:inbox-ref t name)))
 
 ; Snapshot of topology structure (not live role closures): agents + routes +
-; per-agent inbox counts. For dual-rollback baseline in later phases.
+; per-agent inbox counts. For dual-rollback baseline.
 ; → alist :agents :routes :inbox_counts :topo_version
 (define (hermes:snapshot-topology t)
   (let ((agents (hermes:topo-agents t))
-        (routes (hermes:topo-routes t))
+        (routes (hermes:copy-routes (hermes:topo-routes t)))
         (inbox (hermes:topo-inbox t)))
     (let loop ((xs agents) (counts (quote ())))
       (if (null? xs)
@@ -219,10 +255,22 @@
           (let ((c (length (hermes:inbox-ref t n))))
             (loop (cdr xs) (cons (cons n c) counts))))))))
 
+; Restore route table from a topology snapshot alist or a raw routes list.
+(define (hermes:restore-topology-routes! t snap-or-routes)
+  (let ((from-snap
+          (if (list? snap-or-routes)
+            (hermes:alist-ref ":routes" snap-or-routes #f)
+            #f)))
+    (let ((routes (if from-snap from-snap snap-or-routes)))
+      (hermes:set-routes! t (hermes:copy-routes routes))
+      (hermes:stats-bump! "rollback_ok")
+      #t)))
+
 ; ── Default pure roles for star / region topology ──
 ;
 ; worker-east: payload' = payload * 2
 ; worker-west: payload' = payload * 3
+; worker-scale: payload' = (coord-scale payload)  — free name for AST rebind probes
 ; router: pass-through (routing done by table)
 ; collector: append payload to inbox; msg.to stays collector
 
@@ -242,8 +290,34 @@
         (* (hermes:msg-payload msg) 3)
         (hermes:msg-hops msg)))
 
+; Calls workspace binding `coord-scale` (install via hermes:install-source).
+(define (hermes:default-worker-scale msg)
+  (list (hermes:msg-id msg)
+        (hermes:msg-from msg)
+        "collector"
+        (hermes:msg-region msg)
+        (coord-scale (hermes:msg-payload msg))
+        (hermes:msg-hops msg)))
+
 (define (hermes:default-router-pass msg)
   msg)
+
+(define (hermes:star-routes-normal)
+  (list
+    (list "producer" "" "router")
+    (list "router" "east" "worker-e")
+    (list "router" "west" "worker-w")
+    (list "worker-e" "" "collector")
+    (list "worker-w" "" "collector")))
+
+; East/west workers swapped — coordination topology mutation target.
+(define (hermes:star-routes-swapped)
+  (list
+    (list "producer" "" "router")
+    (list "router" "east" "worker-w")
+    (list "router" "west" "worker-e")
+    (list "worker-e" "" "collector")
+    (list "worker-w" "" "collector")))
 
 ; Collector closes over topology so it can write inbox.
 (define (hermes:default-collector t)
@@ -265,12 +339,7 @@
 ;                      ─west→ worker-w → collector
 (define (hermes:build-star-topology)
   (let ((agents (list "producer" "router" "worker-e" "worker-w" "collector"))
-        (routes (list
-                  (list "producer" "" "router")
-                  (list "router" "east" "worker-e")
-                  (list "router" "west" "worker-w")
-                  (list "worker-e" "" "collector")
-                  (list "worker-w" "" "collector"))))
+        (routes (hermes:star-routes-normal)))
     (let ((t (hermes:make-topology agents routes)))
       (hermes:bind-role! t "producer" hermes:default-router-pass)
       (hermes:bind-role! t "router" hermes:default-router-pass)
@@ -280,13 +349,14 @@
       t)))
 
 ; Run N messages alternating east/west with payloads 1..N.
-; East: payload i → 2i ; West: payload i → 3i
-; Expected sum = sum over i of (if east then 2i else 3i)
-; → alist :delivered :failed :expected_sum :actual_sum :expected_count
-(define (hermes:run-region-workload! t n)
+; factor-east / factor-west: expected transform at the worker that serves that region.
+; → alist :delivered :failed :expected_sum :actual_sum :expected_count :actual_count
+(define (hermes:run-region-workload-factors! t n factor-east factor-west)
   (hermes:stats-bump! "workloads_run")
   (hermes:stats-set! "last_delivered" 0)
-  (let ((nn (if (and (number? n) (> n 0)) n 0)))
+  (let ((nn (if (and (number? n) (> n 0)) n 0))
+        (fe (if (number? factor-east) factor-east 2))
+        (fw (if (number? factor-west) factor-west 3)))
     (let loop ((i 1) (delivered 0) (failed 0) (expected 0))
       (if (> i nn)
         (list (cons ":delivered" delivered)
@@ -296,7 +366,7 @@
               (cons ":expected_count" nn)
               (cons ":actual_count" (hermes:inbox-count t "collector")))
         (let ((region (if (= (modulo i 2) 1) "east" "west"))
-              (factor (if (= (modulo i 2) 1) 2 3)))
+              (factor (if (= (modulo i 2) 1) fe fw)))
           (let ((msg (hermes:make-msg
                        (string-append "m" (number->string i))
                        "producer"
@@ -313,3 +383,31 @@
                       delivered
                       (+ failed 1)
                       (+ expected (* factor i)))))))))))
+
+(define (hermes:run-region-workload! t n)
+  (hermes:run-region-workload-factors! t n 2 3))
+
+; East-only batch of n messages with payloads 1..n, expected factor f.
+(define (hermes:run-east-workload! t n factor)
+  (hermes:stats-bump! "workloads_run")
+  (hermes:stats-set! "last_delivered" 0)
+  (let ((nn (if (and (number? n) (> n 0)) n 0))
+        (f (if (number? factor) factor 2)))
+    (let loop ((i 1) (delivered 0) (failed 0) (expected 0))
+      (if (> i nn)
+        (list (cons ":delivered" delivered)
+              (cons ":failed" failed)
+              (cons ":expected_sum" expected)
+              (cons ":actual_sum" (hermes:inbox-sum t "collector"))
+              (cons ":expected_count" nn)
+              (cons ":actual_count" (hermes:inbox-count t "collector")))
+        (let ((msg (hermes:make-msg
+                     (string-append "e" (number->string i))
+                     "producer"
+                     "collector"
+                     "east"
+                     i)))
+          (let ((r (hermes:send! t "producer" msg 16)))
+            (if (hermes:alist-ref ":ok" r #f)
+              (loop (+ i 1) (+ delivered 1) failed (+ expected (* f i)))
+              (loop (+ i 1) delivered (+ failed 1) (+ expected (* f i))))))))))

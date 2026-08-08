@@ -120,7 +120,7 @@
                (snap-agents (hermes:alist-ref ":agents" snap #f))
                (snap-ver (hermes:alist-ref ":topo_version" snap 0))
                (snap-ok (hermes:check-true (list? snap-agents)))
-               (snap-ver-ok (hermes:check-eq snap-ver 1)))
+               (snap-ver-ok (hermes:check-eq snap-ver hermes:topology-version)))
           (display "snapshot: agents=")
           (display (length (if (list? snap-agents) snap-agents (quote ()))))
           (display " version=")

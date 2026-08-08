@@ -1,0 +1,101 @@
+; lib/hermes-mutate.aura — Axis B: safe mutation of coordination logic
+;
+; (require "hermes-mutate" all:)
+;
+; Two layers (both pure-Aura on the evolvable core):
+;   1. AST rebind of named coordination policy via std/mutate (like Hephaestus)
+;   2. Topology-level helpers live in hermes-topology (set-routes! / rebind-role!)
+;
+; Form order: export BEFORE require (host #2766 free-var residual).
+
+(export hermes:mutate-version
+        hermes:install-source
+        hermes:safety-ok?
+        hermes:snapshot
+        hermes:restore
+        hermes:rebind-safe)
+
+(require "std/mutate" all:)
+(require "hermes-measure" all:)
+
+(define hermes:mutate-version 1)
+
+(define (hermes:install-source source)
+  (set-code source)
+  (try (begin (eval-current) #t) (catch (e) #f)))
+
+(define (hermes:safety-ok?)
+  (try
+    (and (mutate:boundary-safe?) (mutate:quota-ok?))
+    (catch (e) #f)))
+
+(define (hermes:snapshot tag)
+  (try
+    (let ((id (ast:snapshot tag)))
+      (if (number? id) id -1))
+    (catch (e) -1)))
+
+(define (hermes:restore snap-id)
+  (if (and (number? snap-id) (>= snap-id 0))
+    (try
+      (begin
+        (ast:restore snap-id)
+        (try (eval-current) (catch (e) #f))
+        (hermes:stats-bump! "rollback_ok")
+        #t)
+      (catch (e)
+        (hermes:stats-bump! "rollback_fail")
+        #f))
+    (begin
+      (hermes:stats-bump! "rollback_fail")
+      #f)))
+
+; Returns alist: :ok :snap :mut-ok :reason
+; Fully inlined safety/snapshot/restore (avoid private free helpers after rebind).
+(define (hermes:rebind-safe name body summary)
+  (if (not (try (and (mutate:boundary-safe?) (mutate:quota-ok?)) (catch (e) #f)))
+    (begin
+      (hermes:stats-bump! "mut_fail")
+      (list (cons ":ok" #f)
+            (cons ":snap" -1)
+            (cons ":mut-ok" #f)
+            (cons ":reason" "boundary-or-quota")))
+    (let ((snap
+            (try
+              (let ((id (ast:snapshot summary)))
+                (if (number? id) id -1))
+              (catch (e) -1))))
+      (try (mutate:safe-yield) (catch (e) #f))
+      (let ((mut-res (try (mutate:rebind name body summary) (catch (e) #f))))
+        (if (eq? mut-res #t)
+          (let ((ev-ok (try (begin (eval-current) #t) (catch (e) #f))))
+            (if ev-ok
+              (begin
+                (hermes:stats-bump! "mut_ok")
+                (list (cons ":ok" #t)
+                      (cons ":snap" snap)
+                      (cons ":mut-ok" #t)
+                      (cons ":reason" "applied")))
+              (begin
+                (if (and (number? snap) (>= snap 0))
+                  (try
+                    (begin
+                      (ast:restore snap)
+                      (try (eval-current) (catch (e) #f))
+                      (hermes:stats-bump! "rollback_ok")
+                      #t)
+                    (catch (e)
+                      (hermes:stats-bump! "rollback_fail")
+                      #f))
+                  (hermes:stats-bump! "rollback_fail"))
+                (hermes:stats-bump! "mut_fail")
+                (list (cons ":ok" #f)
+                      (cons ":snap" snap)
+                      (cons ":mut-ok" #t)
+                      (cons ":reason" "eval-failed")))))
+          (begin
+            (hermes:stats-bump! "mut_fail")
+            (list (cons ":ok" #f)
+                  (cons ":snap" snap)
+                  (cons ":mut-ok" #f)
+                  (cons ":reason" "rebind-failed"))))))))

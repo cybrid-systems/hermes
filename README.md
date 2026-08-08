@@ -156,7 +156,7 @@ hermes/
 | Phase | Focus | Status |
 |-------|--------|--------|
 | **1** | Minimal pure-Aura multi-agent topology + baseline metrology (single host, process boundary) | **landed** (`examples/01-minimal-topology`) |
-| **2** | Mutation of routing / arbiter under controlled multi-agent load | planned |
+| **2** | Mutation of routing / roles / AST coordination policy under load | **landed** (`examples/02-mutation-routing`) |
 | **3** | Failure injection (message loss, node pause) + recovery denseness | planned |
 | **4** | Thin wire / transport \(E\) + schema-gated messages | planned |
 | **5** | Multi-host soak + denseness judgment | planned |
@@ -178,11 +178,12 @@ Apache License 2.0 (same as Aura, Aether, Hephaestus, Prometheus)
 
 ## Status
 
-**Phase 1 landed.** Minimal pure-Aura multi-agent topology probe passes with escapes=0.
+**Phase 1–2 landed.** Topology + coordination mutation under load; both probes escapes=0.
 
 ```bash
 ./scripts/check-structure.sh    # no binary required
 ./scripts/run-aura.sh examples/01-minimal-topology/main.aura
+./scripts/run-aura.sh examples/02-mutation-routing/main.aura
 ./scripts/run-all.sh
 ```
 
