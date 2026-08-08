@@ -1,0 +1,63 @@
+; examples/05-multihost-soak/worker.aura
+;
+; Host B worker process for Phase 5 multi-host denseness.
+; Uses iterative while (not deep recursion) for soak-scale mailboxes.
+;
+; Inbox:  /tmp/hermes-mh-inbox.txt
+; Outbox: /tmp/hermes-mh-outbox.txt
+;   delivered|payload_sum|refused|failed|collector_sum
+
+(require "std/string" all:)
+(require "hermes-min" all:)
+
+(let* ((inbox "/tmp/hermes-mh-inbox.txt")
+       (outbox "/tmp/hermes-mh-outbox.txt")
+       (raw (try (read-file inbox) (catch (e) "")))
+       ; host-split-lines is iterative (std string-split is deep-recursive)
+       (lines (if (string? raw) (hermes:host-split-lines raw) (quote ())))
+       (t (hermes:build-star-topology))
+       (delivered 0)
+       (failed 0)
+       (refused 0)
+       (payload-sum 0)
+       (xs lines))
+  (hermes:clear-inbox! t "collector")
+  (while (lambda () (not (null? xs)))
+    (lambda ()
+      (let ((line (car xs)))
+        (set! xs (cdr xs))
+        (if (and (string? line) (> (string-length line) 0))
+          (if (not (hermes:wire-valid? line))
+            (set! refused (+ refused 1))
+            (let ((r (hermes:wire-send! t "producer" line 16)))
+              (if (hermes:alist-ref ":ok" r #f)
+                (begin
+                  (set! delivered (+ delivered 1))
+                  (let ((msg (hermes:wire-decode line)))
+                    (if msg
+                      (set! payload-sum (+ payload-sum (hermes:msg-payload msg)))
+                      #f)))
+                (if (hermes:alist-ref ":wire_ok" r #f)
+                  (set! failed (+ failed 1))
+                  (set! refused (+ refused 1))))))
+          #f))))
+  (let* ((collector-sum (hermes:inbox-sum t "collector"))
+         (summary
+           (string-append
+             (number->string delivered) "|"
+             (number->string payload-sum) "|"
+             (number->string refused) "|"
+             (number->string failed) "|"
+             (number->string collector-sum) "\n")))
+    (write-file outbox summary)
+    (display "worker delivered=")
+    (display delivered)
+    (display " payload-sum=")
+    (display payload-sum)
+    (display " refused=")
+    (display refused)
+    (display " failed=")
+    (display failed)
+    (display " collector-sum=")
+    (display collector-sum)
+    (newline)))

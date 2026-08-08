@@ -9,14 +9,19 @@ on \(S_{\mathrm{Hermes}}\).
 | 2026-08-08 | `std/orchestrator` agent registry unusable on stdin (`agent:spawn` / `agent:list` / epoch) | [aura#2767](https://github.com/cybrid-systems/aura/issues/2767) **P0** | Consequence of #2766; Hermes Phase 1 avoided orchestrator. |
 | 2026-08-08 | Stdlib-wide require-before-export class risk | [aura#2768](https://github.com/cybrid-systems/aura/issues/2768) **P1** | Audit + canary. |
 | 2026-08-08 | CLI stdin-only + denseness env footguns | [aura#2769](https://github.com/cybrid-systems/aura/issues/2769) **P2** | Runner DX; `run-aura.sh` encodes workaround. |
+| 2026-08-08 | `AURA_BIN` not visible to child unless exported | (runner) | Phase 5: `export AURA_BIN` in `run-aura.sh` + fallback `../aura-grok/build/aura`. |
+| 2026-08-08 | `std/string` `string-split` is O(n) recursive depth | host residual | Soak mailboxes blow ~700 depth cap; use iterative `hermes:host-split-lines`. |
+| 2026-08-08 | No `tcp-listen` in denseness path | surface gap | Phase 5 uses FS mailbox + child process, not TCP server. |
 
 ## Hermes workarounds (until host fix)
 
-1. **Form order in span libs**: always `(export …)` before `(require …)` when exports free-ref module cells (Hermes lib already follows this on the working path).
+1. **Form order in span libs**: always `(export …)` before `(require …)` when exports free-ref module cells.
 2. **Do not require `std/orchestrator`** for denseness evidence; pure list/hash topology in `hermes-topology.aura`.
-3. **Private helpers**: prefer inlined bodies or **exported** bindings when one define free-refs another in the same module (Phase 3: `make-faults-hash` unbound until inlined — same class as #2766).
-4. **Runner**:
+3. **Private helpers**: prefer inlined bodies or **exported** bindings (Phase 3 free-var residual).
+4. **Soak-scale strings**: use `hermes:host-split-lines` (iterative), not `string-split`, on multi-line mailboxes.
+5. **Runner**:
    ```bash
+   export AURA_BIN   # required for Phase 5 child getenv
    export AURA_PATH="$AURA_LIB:$HERMES_LIB"
    export AURA_SANDBOX=off
    export AURA_PIPELINE_STRICT=0

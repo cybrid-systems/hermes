@@ -9,6 +9,7 @@ PROBES=(
   02-mutation-routing
   03-failure-recovery
   04-thin-wire
+  05-multihost-soak
 )
 
 pass=0

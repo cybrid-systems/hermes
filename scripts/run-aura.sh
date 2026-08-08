@@ -69,6 +69,8 @@ fi
 
 # CLI denseness demos: sandbox off; pipeline strict 0 for tree-walker fallback
 # on hosts that need it (same discipline as Aether / Hephaestus).
+# Export AURA_BIN so child aura processes (Phase 5 multi-host) can getenv it.
+export AURA_BIN
 export AURA_PATH="${AURA_PATH:-$AURA_LIB:$HERMES_LIB}"
 export AURA_SANDBOX="${AURA_SANDBOX:-off}"
 export AURA_PIPELINE_STRICT="${AURA_PIPELINE_STRICT:-0}"

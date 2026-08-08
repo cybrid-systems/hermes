@@ -23,13 +23,11 @@ Primary objects under test:
 
 ## Current Status
 
-Phase 1–4 landed:
-- `01-minimal-topology` (A+F) — pure-Aura star/region, escapes=0
-- `02-mutation-routing` (A+B+F) — hot routes/roles/AST coord policy + dual rollback
-- `03-failure-recovery` (C+E+F) — pause/drop/failover/recover + fault event log
-- `04-thin-wire` (D+E+F) — HMSG\|v1 schema-gated wire, escapes=0
+Phase 1–5 landed — denseness judgment on single-machine multi-process \(S_Hermes\):
+- `01`–`04` — core topology/mutation/failure/schema in \(V_A\), escapes=0
+- `05-multihost-soak` — cross-process HMSG + FS/shell \(E\) metered; judgment **practically dense**
 
-Phase 5 still planned (multi-host soak). Avoid `std/orchestrator` until aura#2767.
+Avoid `std/orchestrator` until aura#2767. Use `hermes:host-split-lines` for soak mailboxes.
 
 ## When generating or reviewing code
 

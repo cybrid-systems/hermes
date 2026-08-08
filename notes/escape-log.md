@@ -4,13 +4,27 @@ Every leave from pure Aura (\(V_A\)) on a coordination-critical path must be rec
 
 | Date | Location | Reason | Mechanism | Impact | Mitigation / Plan |
 |------|----------|--------|-----------|--------|-------------------|
-| (none on Phase 1–4 core) | | | | | |
+| 2026-08-08 | `hermes-host.aura` `host-write-file!` | Cross-process mailbox write | host prim `write-file` (tag 10) | Distribution only; frames still HMSG schema | Keep thin; do not put routing logic in FS |
+| 2026-08-08 | `hermes-host.aura` `host-read-file` | Cross-process summary / inbox read | host prim `read-file` (tag 11) | Distribution only | Same |
+| 2026-08-08 | `hermes-host.aura` `host-shell!` / `host-run-aura-file!` | Spawn host-B aura worker | host prim `shell` (tag 12) | Distribution only | Prefer future native multi-session when dense |
+
+## Phase 1–4
+
+No required leave from \(V_A\) on the coordination / schema path (wire was pure-Aura strings).
 
 ## Phase 4 wire note
 
-The Phase 4 wire path (`hermes-wire.aura`, `HMSG|v1|…`) is **schema-gated and metered** (`wire_encode` / `wire_decode` / `wire_refuse` / `wire_bytes`) but implemented entirely in pure Aura strings. It is a **conceptual boundary \(E\)** without a required host/FFI leave.
+`HMSG|v1|…` schema is **conceptual \(E\)** implemented in \(V_A\). Not logged as escape.
 
-If Phase 5 multi-host transport needs sockets / OS I/O, record those leaves here as audited \(E\).
+## Phase 5 transport note
+
+Multi-process denseness uses **metered host \(E\)** only. Probe enforces:
+
+```text
+escapes == host_writes + host_reads + host_shells
+```
+
+Evolvable core (topology, routing, schema gate) remains pure Aura on both hosts.
 
 ## Convention
 

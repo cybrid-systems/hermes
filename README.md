@@ -159,7 +159,7 @@ hermes/
 | **2** | Mutation of routing / roles / AST coordination policy under load | **landed** (`examples/02-mutation-routing`) |
 | **3** | Failure injection (message loss, node pause) + recovery denseness | **landed** (`examples/03-failure-recovery`) |
 | **4** | Thin wire / transport \(E\) + schema-gated messages | **landed** (`examples/04-thin-wire`) |
-| **5** | Multi-host soak + denseness judgment | planned |
+| **5** | Multi-process soak + denseness judgment | **landed** (`examples/05-multihost-soak`) — *practically dense* |
 
 ## Escape discipline
 
@@ -178,15 +178,11 @@ Apache License 2.0 (same as Aura, Aether, Hephaestus, Prometheus)
 
 ## Status
 
-**Phase 1–4 landed.** Topology, mutation, failure/recovery, and schema-gated wire; all probes escapes=0.
+**Phase 1–5 landed.** Constructive denseness judgment: **practically dense** on single-machine multi-process \(S_{\mathrm{Hermes}}\) (core in \(V_A\); host FS/shell \(E\) metered).
 
 ```bash
-./scripts/check-structure.sh    # no binary required
-./scripts/run-aura.sh examples/01-minimal-topology/main.aura
-./scripts/run-aura.sh examples/02-mutation-routing/main.aura
-./scripts/run-aura.sh examples/03-failure-recovery/main.aura
-./scripts/run-aura.sh examples/04-thin-wire/main.aura
-./scripts/run-all.sh
+./scripts/check-structure.sh
+./scripts/run-all.sh            # 01–05
 ```
 
 Hermes continues Aura Unify’s constructive measurement program after Aether, Hephaestus and Prometheus — pressure-testing the same basis on the distributed multi-agent coordination subspace required for viral self-evolving distributed agents.

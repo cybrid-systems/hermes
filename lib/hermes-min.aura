@@ -1,4 +1,4 @@
-; lib/hermes-min.aura — Phase 1–4 facade (Axes A–F partial; D wire landed)
+; lib/hermes-min.aura — Phase 1–5 facade (full denseness surface)
 ;
 ; (require "hermes-min" all:)
 ;
@@ -9,7 +9,8 @@
         hermes:time-call hermes:check-eq hermes:check-true hermes:check-ge
         hermes:escape-note!
         hermes:topology-version hermes:mutate-version
-        hermes:fault-version hermes:wire-version hermes:min-version
+        hermes:fault-version hermes:wire-version hermes:host-version
+        hermes:min-version
         hermes:msg-id hermes:msg-from hermes:msg-to
         hermes:msg-region hermes:msg-payload hermes:msg-hops
         hermes:make-msg hermes:msg-with-hops hermes:msg-with-from
@@ -48,12 +49,21 @@
         hermes:wire-encode hermes:wire-decode
         hermes:wire-valid? hermes:wire-errors
         hermes:wire-send! hermes:wire-roundtrip?
-        hermes:wire-batch-send!)
+        hermes:wire-batch-send!
+        hermes:host-write-file! hermes:host-read-file hermes:host-shell!
+        hermes:host-run-aura-file!
+        hermes:host-write-mailbox! hermes:host-read-summary
+        hermes:host-parse-summary hermes:host-build-inbox-frames
+        hermes:host-send-batch!
+        hermes:host-split-lines
+        hermes:host-default-inbox hermes:host-default-outbox
+        hermes:host-default-worker)
 
 (require "hermes-measure" all:)
 (require "hermes-topology" all:)
 (require "hermes-mutate" all:)
 (require "hermes-fault" all:)
 (require "hermes-wire" all:)
+(require "hermes-host" all:)
 
-(define hermes:min-version 4)
+(define hermes:min-version 5)

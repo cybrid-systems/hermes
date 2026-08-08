@@ -1,0 +1,211 @@
+; lib/hermes-host.aura — Phase 5: multi-host transport boundary (audited E)
+;
+; (require "hermes-host" all:)
+;
+; Cross-process denseness path:
+;   Host A encodes HMSG frames → write-file mailbox  (E: host FS)
+;   Host B = child aura process via shell             (E: process spawn)
+;   Host B decodes + runs pure-Aura topology
+;   Host A read-file outbox summary                  (E: host FS)
+;
+; Evolvable coordination core (topology/schema) stays in V_A.
+; Host I/O / process spawn are thin, metered escapes.
+; Form order: export BEFORE require (host #2766).
+
+(export hermes:host-version
+        hermes:host-aura-bin
+        hermes:host-write-file!
+        hermes:host-read-file
+        hermes:host-shell!
+        hermes:host-run-aura-file!
+        hermes:host-write-mailbox!
+        hermes:host-read-summary
+        hermes:host-parse-summary
+        hermes:host-build-inbox-frames
+        hermes:host-send-batch!
+        hermes:host-split-lines
+        hermes:host-default-inbox
+        hermes:host-default-outbox
+        hermes:host-default-worker)
+
+(require "std/string" all:)
+(require "std/list" all:)
+(require "hermes-measure" all:)
+(require "hermes-topology" all:)
+(require "hermes-wire" all:)
+
+(define hermes:host-version 1)
+
+(define hermes:host-default-inbox "/tmp/hermes-mh-inbox.txt")
+(define hermes:host-default-outbox "/tmp/hermes-mh-outbox.txt")
+(define hermes:host-default-worker "examples/05-multihost-soak/worker.aura")
+
+; Iterative newline split — std/string-split is O(n) recursive depth and
+; blows the host recursion cap (~700) on multi-line soak mailboxes.
+(define (hermes:host-split-lines s)
+  (if (not (string? s))
+    (quote ())
+    (let ((n (string-length s))
+          (i 0)
+          (acc (quote ())))
+      (while (lambda () (< i n))
+        (lambda ()
+          (let ((j i))
+            (while (lambda () (and (< j n) (not (= (string-ref s j) 10))))
+              (lambda () (set! j (+ j 1))))
+            (set! acc (cons (substring s i j) acc))
+            (set! i (+ j 1)))))
+      (reverse acc))))
+
+; ── Audited host escapes ──
+; escape-note! tags: 10=write-file, 11=read-file, 12=shell
+
+(define (hermes:host-write-file! path content)
+  (hermes:escape-note! 10)
+  (hermes:stats-bump! "host_writes")
+  (try
+    (begin
+      (write-file path content)
+      (hermes:stats-bump! "host_ok")
+      #t)
+    (catch (e)
+      (hermes:stats-bump! "host_fail")
+      #f)))
+
+(define (hermes:host-read-file path)
+  (hermes:escape-note! 11)
+  (hermes:stats-bump! "host_reads")
+  (try
+    (let ((v (read-file path)))
+      (if (string? v)
+        (begin (hermes:stats-bump! "host_ok") v)
+        (begin (hermes:stats-bump! "host_fail") "")))
+    (catch (e)
+      (hermes:stats-bump! "host_fail")
+      "")))
+
+(define (hermes:host-shell! cmd)
+  (hermes:escape-note! 12)
+  (hermes:stats-bump! "host_shells")
+  (try
+    (let ((code (shell cmd)))
+      (if (and (number? code) (= code 0))
+        (begin (hermes:stats-bump! "host_ok") 0)
+        (begin (hermes:stats-bump! "host_fail") (if (number? code) code 1))))
+    (catch (e)
+      (hermes:stats-bump! "host_fail")
+      1)))
+
+; Resolve aura binary for child processes.
+(define (hermes:host-aura-bin)
+  (let ((v (getenv "AURA_BIN")))
+    (if (and (string? v) (> (string-length v) 0))
+      v
+      ; Fallback when runner forgot to export AURA_BIN (sibling checkout layout).
+      "../aura-grok/build/aura")))
+
+; Run a .aura file in a child process (inherits AURA_PATH / SANDBOX / PIPELINE_STRICT).
+(define (hermes:host-run-aura-file! path)
+  (hermes:host-shell!
+    (string-append (hermes:host-aura-bin) " < " path
+                   " > /tmp/hermes-mh-worker.log 2>&1")))
+
+; Write list of wire frame strings as mailbox lines.
+(define (hermes:host-write-mailbox! path frames)
+  (let loop ((xs (if (list? frames) frames (quote ()))) (acc ""))
+    (if (null? xs)
+      (hermes:host-write-file! path acc)
+      (let ((line (car xs)))
+        (loop (cdr xs)
+              (string-append acc
+                (if (string? line) line "")
+                "\n"))))))
+
+; Outbox summary: "delivered|sum|refused|failed\n"
+(define (hermes:host-read-summary path)
+  (hermes:host-read-file path))
+
+; Outbox: delivered|payload_sum|refused|failed|collector_sum
+(define (hermes:host-parse-summary text)
+  (if (not (and (string? text) (> (string-length text) 0)))
+    (list (cons ":ok" #f)
+          (cons ":delivered" 0)
+          (cons ":sum" 0)
+          (cons ":refused" 0)
+          (cons ":failed" 0)
+          (cons ":collector_sum" 0))
+    (let ((line
+            (let ((parts (string-split text "\n")))
+              (if (and (pair? parts) (string? (car parts))
+                       (> (string-length (car parts)) 0))
+                (car parts)
+                text))))
+      (let ((bits (string-split line "|")))
+        (if (< (length bits) 3)
+          (list (cons ":ok" #f)
+                (cons ":delivered" 0)
+                (cons ":sum" 0)
+                (cons ":refused" 0)
+                (cons ":failed" 0)
+                (cons ":collector_sum" 0))
+          (let ((d (string->number (list-ref bits 0)))
+                (s (string->number (list-ref bits 1)))
+                (r (string->number (list-ref bits 2)))
+                (f (if (>= (length bits) 4)
+                     (string->number (list-ref bits 3))
+                     0))
+                (cs (if (>= (length bits) 5)
+                      (string->number (list-ref bits 4))
+                      0)))
+            (list (cons ":ok" #t)
+                  (cons ":delivered" (if (number? d) d 0))
+                  (cons ":sum" (if (number? s) s 0))
+                  (cons ":refused" (if (number? r) r 0))
+                  (cons ":failed" (if (number? f) f 0))
+                  (cons ":collector_sum" (if (number? cs) cs 0)))))))))
+
+; Build N east wire frames with payloads 1..N (optionally append garbage lines).
+(define (hermes:host-build-inbox-frames n include-bad?)
+  (let ((nn (if (and (number? n) (> n 0)) n 0)))
+    (let loop ((i 1) (acc (quote ())))
+      (if (> i nn)
+        (if include-bad?
+          (reverse (cons "NOT-A-FRAME" (cons "HMSG|v0|x|y|z|east|1" acc)))
+          (reverse acc))
+        (let ((msg (hermes:make-msg
+                     (string-append "mh" (number->string i))
+                     "host-a"
+                     "collector"
+                     "east"
+                     i)))
+          (let ((frame (hermes:wire-encode msg)))
+            (loop (+ i 1)
+                  (if frame (cons frame acc) acc))))))))
+
+; Full multi-host batch: write mailbox → run worker → parse summary.
+; Outbox format: delivered|payload_sum|refused|failed|collector_sum
+; → alist with those fields + :shell :expected_*
+(define (hermes:host-send-batch! n worker-path inbox-path outbox-path include-bad?)
+  (let ((frames (hermes:host-build-inbox-frames n include-bad?))
+        (nn (if (and (number? n) (> n 0)) n 0)))
+    (let ((expected-payload-sum
+            (if (<= nn 0) 0 (quotient (* nn (+ nn 1)) 2)))
+          (expected-collector-sum
+            (if (<= nn 0) 0 (* 2 (quotient (* nn (+ nn 1)) 2)))))
+      (hermes:stats-set! "multihost_msgs"
+        (+ (hermes:stats-ref "multihost_msgs") nn))
+      (hermes:host-write-file! outbox-path "")
+      (hermes:host-write-mailbox! inbox-path frames)
+      (let ((code (hermes:host-run-aura-file! worker-path)))
+        (let ((raw (hermes:host-read-summary outbox-path)))
+          (let ((summary (hermes:host-parse-summary raw)))
+            (list (cons ":ok" (and (= code 0) (hermes:alist-ref ":ok" summary #f)))
+                  (cons ":shell" code)
+                  (cons ":delivered" (hermes:alist-ref ":delivered" summary 0))
+                  (cons ":payload_sum" (hermes:alist-ref ":sum" summary 0))
+                  (cons ":refused" (hermes:alist-ref ":refused" summary 0))
+                  (cons ":failed" (hermes:alist-ref ":failed" summary 0))
+                  (cons ":collector_sum" (hermes:alist-ref ":collector_sum" summary 0))
+                  (cons ":expected_payload_sum" expected-payload-sum)
+                  (cons ":expected_collector_sum" expected-collector-sum)
+                  (cons ":expected_delivered" nn))))))))

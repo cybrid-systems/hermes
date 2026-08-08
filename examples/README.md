@@ -8,7 +8,7 @@
 | 02 | Mutation of routing / roles / AST coordination policy under load | A B F | landed |
 | 03 | Failure injection + recovery | C E F | landed |
 | 04 | Thin wire / schema-gated messages | D E F | landed |
-| 05+ | Multi-host soak, denseness judgment | all | planned |
+| 05 | Multi-process soak + denseness judgment | D E F | landed |
 
 Each probe is runnable via:
 
