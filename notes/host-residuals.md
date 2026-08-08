@@ -8,10 +8,12 @@ on \(S_{\mathrm{Hermes}}\).
 | 2026-08-08 | Module free-var capture broken when `(require …)` precedes `(export …)` | [aura#2766](https://github.com/cybrid-systems/aura/issues/2766) **P0** | Minimal bad/good order repro. Root cause. |
 | 2026-08-08 | `std/orchestrator` agent registry unusable on stdin (`agent:spawn` / `agent:list` / epoch) | [aura#2767](https://github.com/cybrid-systems/aura/issues/2767) **P0** | Consequence of #2766; Hermes Phase 1 avoided orchestrator. |
 | 2026-08-08 | Stdlib-wide require-before-export class risk | [aura#2768](https://github.com/cybrid-systems/aura/issues/2768) **P1** | Audit + canary. |
-| 2026-08-08 | CLI stdin-only + denseness env footguns | [aura#2769](https://github.com/cybrid-systems/aura/issues/2769) **P2** | Runner DX; `run-aura.sh` encodes workaround. |
-| 2026-08-08 | `AURA_BIN` not visible to child unless exported | (runner) | Phase 5: `export AURA_BIN` in `run-aura.sh` + fallback `../aura-grok/build/aura`. |
-| 2026-08-08 | `std/string` `string-split` is O(n) recursive depth | host residual | Soak mailboxes blow ~700 depth cap; use iterative `hermes:host-split-lines`. |
-| 2026-08-08 | No `tcp-listen` in denseness path | surface gap | Phase 5 uses FS mailbox + child process, not TCP server. |
+| 2026-08-08 | CLI stdin-only + denseness env footguns | [aura#2767](https://github.com/cybrid-systems/aura/issues/2767) **P2** | Runner DX; comment added for multi-process. |
+| 2026-08-08 | `AURA_BIN` not visible to child unless exported | [aura#2772](https://github.com/cybrid-systems/aura/issues/2772) **P1** | Phase 5: `export AURA_BIN` + fallback path. |
+| 2026-08-08 | `std/string` `string-split` O(n) recursive depth | [aura#2770](https://github.com/cybrid-systems/aura/issues/2770) **P0** | Soak mailboxes; use `hermes:host-split-lines`. |
+| 2026-08-08 | No `tcp-listen` / `tcp-accept` | [aura#2771](https://github.com/cybrid-systems/aura/issues/2771) **P1** | Phase 5 uses FS mailbox + child process. |
+| 2026-08-08 | Module free-var / require-before-export | [aura#2766](https://github.com/cybrid-systems/aura/issues/2766) **P0** | export-before-require discipline. |
+| 2026-08-08 | `std/orchestrator` agent registry broken | [aura#2768](https://github.com/cybrid-systems/aura/issues/2768) **P0** | Avoid until fixed. |
 
 ## Hermes workarounds (until host fix)
 
