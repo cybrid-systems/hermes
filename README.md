@@ -160,6 +160,8 @@ hermes/
 | **3** | Failure injection (message loss, node pause) + recovery denseness | **landed** (`examples/03-failure-recovery`) |
 | **4** | Thin wire / transport \(E\) + schema-gated messages | **landed** (`examples/04-thin-wire`) |
 | **5** | Multi-process soak + denseness judgment | **landed** (`examples/05-multihost-soak`) — *practically dense* |
+| **6** | TCP loopback transport \(E\) | **landed** (`examples/06-tcp-multihost`) |
+| **7** | Live LLM propose edge | **landed** (`examples/07-live-llm`, opt-in keys) |
 
 ## Escape discipline
 

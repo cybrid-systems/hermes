@@ -7,6 +7,8 @@ Every leave from pure Aura (\(V_A\)) on a coordination-critical path must be rec
 | 2026-08-08 | `hermes-host.aura` `host-write-file!` | Cross-process mailbox write | host prim `write-file` (tag 10) | Distribution only; frames still HMSG schema | Keep thin; do not put routing logic in FS |
 | 2026-08-08 | `hermes-host.aura` `host-read-file` | Cross-process summary / inbox read | host prim `read-file` (tag 11) | Distribution only | Same |
 | 2026-08-08 | `hermes-host.aura` `host-shell!` / `host-run-aura-file!` | Spawn host-B aura worker | host prim `shell` (tag 12) | Distribution only | Prefer future native multi-session when dense |
+| 2026-08-09 | `hermes-tcp.aura` tcp-* | OS TCP transport | host prims listen/accept/connect/send/recv/close (tags 20–25) | Distribution only | Prefer over FS when loopback denseness | 
+| 2026-08-09 | `hermes-llm.aura` `llm-chat!` | Live HTTPS propose | `std/llm` + `http-post` (tag 30) | Propose edge only; topology stays pure | Opt-in live probes |
 
 ## Phase 1–4
 

@@ -1,0 +1,112 @@
+; lib/hermes-llm.aura — Phase 6/7: live LLM propose edge (audited HTTPS E)
+;
+; (require "hermes-llm" all:)
+;
+; Uses std/llm (llm:chat). Requires env:
+;   LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+;
+; Escape tag 30 = live HTTPS LLM call (metrology only; always escape-note!).
+; Offline denseness suite must NOT require live keys.
+; Form order: export BEFORE require (#2766).
+
+(export hermes:llm-version
+        hermes:llm-configured?
+        hermes:llm-provider-label
+        hermes:llm-chat!
+        hermes:llm-content
+        hermes:llm-ok?
+        hermes:llm-propose-region!
+        hermes:llm-parse-region)
+
+(require "std/string" all:)
+(require "std/llm" all:)
+(require "hermes-measure" all:)
+
+(define hermes:llm-version 1)
+
+(define (hermes:llm-configured?)
+  (let ((k (getenv "LLM_API_KEY")))
+    (and (string? k) (> (string-length k) 0))))
+
+(define (hermes:llm-provider-label)
+  (let ((m (getenv "LLM_MODEL"))
+        (b (getenv "LLM_BASE_URL")))
+    (string-append
+      (if (string? m) m "?")
+      "@"
+      (if (string? b) b "?"))))
+
+(define (hermes:llm-ok? r)
+  (and (hash? r) (hash-ref r "ok" #f)))
+
+(define (hermes:llm-content r)
+  (if (hash? r)
+    (let ((c (hash-ref r "content" "")))
+      (if (string? c) c ""))
+    ""))
+
+; Live chat — always meters escape (HTTPS leave from V_A).
+(define (hermes:llm-chat! system-prompt user-prompt)
+  (hermes:escape-note! 30)
+  (hermes:stats-bump! "llm_calls")
+  (if (not (hermes:llm-configured?))
+    (begin
+      (hermes:stats-bump! "llm_fail")
+      (hash "ok" #f "error" "no-key" "content" ""))
+    (let ((r (try (llm:chat system-prompt user-prompt)
+                  (catch (e)
+                    (hash "ok" #f "error" "exception" "content" "")))))
+      (if (hermes:llm-ok? r)
+        (begin (hermes:stats-bump! "llm_ok") r)
+        (begin (hermes:stats-bump! "llm_fail") r)))))
+
+; Parse model text for region: prefer last non-empty line (ignore chain-of-thought).
+(define (hermes:llm-parse-region text)
+  (if (not (string? text))
+    #f
+    (let ((n (string-length text))
+          (i 0)
+          (last ""))
+      (while (lambda () (< i n))
+        (lambda ()
+          (let ((j i))
+            (while (lambda () (and (< j n) (not (= (string-ref text j) 10))))
+              (lambda () (set! j (+ j 1))))
+            (let ((line (substring text i j)))
+              (if (and (string? line) (> (string-length line) 0))
+                (set! last line)
+                #f)
+              (set! i (+ j 1))))))
+      (let ((t (string-downcase last)))
+        (cond
+          ((string-contains? t "east") "east")
+          ((string-contains? t "west") "west")
+          (else #f))))))
+
+; Propose routing region for payload n under load hint.
+; → alist :ok :region :raw :provider :error
+(define (hermes:llm-propose-region! payload-n)
+  (let ((sys
+          "You are a denseness routing arbiter for Hermes on Aura.
+Reply with EXACTLY one token: east OR west.
+No punctuation, no explanation.")
+        (usr
+          (string-append
+            "payload="
+            (number->string (if (number? payload-n) payload-n 0))
+            " Prefer east when payload is odd, west when even."
+            " Reply only: east or west")))
+    (let ((r (hermes:llm-chat! sys usr)))
+      (if (not (hermes:llm-ok? r))
+        (list (cons ":ok" #f)
+              (cons ":region" #f)
+              (cons ":raw" (hermes:llm-content r))
+              (cons ":provider" (hermes:llm-provider-label))
+              (cons ":error" (if (hash? r) (hash-ref r "error" "fail") "fail")))
+        (let ((raw (hermes:llm-content r)))
+          (let ((region (hermes:llm-parse-region raw)))
+            (list (cons ":ok" (if region #t #f))
+                  (cons ":region" region)
+                  (cons ":raw" raw)
+                  (cons ":provider" (hermes:llm-provider-label))
+                  (cons ":error" (if region "" "parse-region")))))))))

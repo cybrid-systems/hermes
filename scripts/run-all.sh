@@ -10,6 +10,8 @@ PROBES=(
   03-failure-recovery
   04-thin-wire
   05-multihost-soak
+  06-tcp-multihost
+  # 07-live-llm is opt-in (needs keys): source env-minimax.sh or env-deepseek.sh
 )
 
 pass=0

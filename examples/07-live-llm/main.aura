@@ -1,0 +1,165 @@
+; examples/07-live-llm/main.aura
+;
+; Live LLM propose edge denseness (HTTPS E).
+;
+;   source ./scripts/env-minimax.sh   # MiniMax-M3
+;   # or: source ./scripts/env-deepseek.sh  # deepseek-v4-flash
+;   ./scripts/run-aura.sh examples/07-live-llm/main.aura
+;
+; Requires LLM_API_KEY + HERMES_LLM_LIVE=1. Offline suite skips (no key).
+; LLM is only on the propose edge; topology delivery stays pure Aura.
+;
+; R0: configured?
+; R1: chat smoke (expect PONG-ish content)
+; R2: propose-region for odd/even payloads → east/west
+; R3: apply proposed region through topology (wire path still pure)
+; R4: escape metrology (llm_calls, escapes ≥ llm_calls)
+
+(require "std/string" all:)
+(require "hermes-min" all:)
+
+(hermes:stats-reset!)
+
+(display "=== Hermes 07-live-llm: live propose edge ===")
+(newline)
+(display "provider=")
+(display (hermes:llm-provider-label))
+(newline)
+(display "configured=")
+(display (hermes:llm-configured?))
+(newline)
+
+(define live-env (getenv "HERMES_LLM_LIVE"))
+(define live?
+  (and (hermes:llm-configured?)
+       (string? live-env)
+       (or (equal? live-env "1")
+           (equal? live-env "live")
+           (equal? live-env "true"))))
+
+(if (not live?)
+  (begin
+    (display "SKIP: set HERMES_LLM_LIVE=1 and source env-minimax.sh or env-deepseek.sh")
+    (newline)
+    (display "RESULT skip example=07-live-llm reason=no-live-env")
+    (newline))
+  (begin
+    ; ── R0 ──
+    (let ((r0-ok (hermes:check-true (hermes:llm-configured?))))
+      (display "R0 configured ok=")
+      (display r0-ok)
+      (newline)
+
+      ; ── R1: chat smoke ──
+      (let* ((r1 (hermes:llm-chat!
+                   "Reply with exactly one word: PONG"
+                   "say the word"))
+             (c1 (hermes:llm-content r1))
+             (r1-ok
+               (and (hermes:check-true (hermes:llm-ok? r1))
+                    (hermes:check-true
+                      (or (string-contains? (string-downcase c1) "pong")
+                          (> (string-length c1) 0))))))
+        (display "R1 chat ok=")
+        (display (hermes:llm-ok? r1))
+        (display " content-len=")
+        (display (string-length c1))
+        (newline)
+        (display "R1 ok=")
+        (display r1-ok)
+        (newline)
+
+        ; ── R2: region propose odd→east even→west ──
+        (let* ((p-odd (hermes:llm-propose-region! 7))
+               (p-even (hermes:llm-propose-region! 8))
+               (reg-odd (hermes:alist-ref ":region" p-odd #f))
+               (reg-even (hermes:alist-ref ":region" p-even #f))
+               (r2-ok
+                 (and (hermes:check-true (hermes:alist-ref ":ok" p-odd #f))
+                      (hermes:check-true (hermes:alist-ref ":ok" p-even #f))
+                      (hermes:check-true (equal? reg-odd "east"))
+                      (hermes:check-true (equal? reg-even "west")))))
+          (display "R2 odd=")
+          (write p-odd)
+          (newline)
+          (display "R2 even=")
+          (write p-even)
+          (newline)
+          (display "R2 ok=")
+          (display r2-ok)
+          (newline)
+
+          ; ── R3: topology delivery using proposed region ──
+          (let* ((t (hermes:build-star-topology)))
+            (hermes:clear-inbox! t "collector")
+            (let* ((msg (hermes:make-msg "llm1" "producer" "collector"
+                                         (if (string? reg-odd) reg-odd "east")
+                                         7))
+                   (frame (hermes:wire-encode msg))
+                   (del (hermes:wire-send! t "producer" frame 16))
+                   ; east *2 → 14; west *3 → 21
+                   (want (if (equal? reg-odd "east") 14 21))
+                   (r3-ok
+                     (and (hermes:check-true (hermes:alist-ref ":ok" del #f))
+                          (hermes:check-eq (hermes:alist-ref ":payload" del 0) want)
+                          (hermes:check-eq (hermes:inbox-sum t "collector") want))))
+              (display "R3 deliver: ")
+              (write del)
+              (newline)
+              (display "R3 ok=")
+              (display r3-ok)
+              (newline)
+
+              ; ── R4: metrology ──
+              (let* ((calls (hermes:stats-ref "llm_calls"))
+                     (lok (hermes:stats-ref "llm_ok"))
+                     (esc (hermes:stats-ref "escapes"))
+                     (r4-ok
+                       (and (hermes:check-ge calls 3)
+                            (hermes:check-ge lok 3)
+                            (hermes:check-ge esc calls)
+                            (hermes:check-eq (hermes:stats-ref "llm_fail") 0))))
+                (display "R4 llm_calls=")
+                (display calls)
+                (display " llm_ok=")
+                (display lok)
+                (display " escapes=")
+                (display esc)
+                (newline)
+                (display "R4 ok=")
+                (display r4-ok)
+                (newline)
+
+                (display "stats: ")
+                (write (hermes:stats-alist))
+                (newline)
+
+                (let ((all-ok
+                        (and r0-ok r1-ok r2-ok r3-ok r4-ok
+                             (= (hermes:stats-ref "correctness_fail") 0)
+                             (= (hermes:stats-ref "llm_fail") 0))))
+                  (if all-ok
+                    (begin
+                      (display "PASS: live LLM propose edge + pure-Aura topology")
+                      (newline)
+                      (display "RESULT pass example=07-live-llm provider=")
+                      (display (hermes:llm-provider-label))
+                      (display " escapes=")
+                      (display (hermes:stats-ref "escapes"))
+                      (newline))
+                    (begin
+                      (display "FAIL: live LLM denseness probe")
+                      (newline)
+                      (display "RESULT fail example=07-live-llm")
+                      (newline)
+                      (display "  r0=")
+                      (display r0-ok)
+                      (display " r1=")
+                      (display r1-ok)
+                      (display " r2=")
+                      (display r2-ok)
+                      (display " r3=")
+                      (display r3-ok)
+                      (display " r4=")
+                      (display r4-ok)
+                      (newline))))))))))))

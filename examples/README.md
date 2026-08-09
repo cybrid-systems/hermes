@@ -9,6 +9,8 @@
 | 03 | Failure injection + recovery | C E F | landed |
 | 04 | Thin wire / schema-gated messages | D E F | landed |
 | 05 | Multi-process soak + denseness judgment | D E F | landed |
+| 06 | TCP loopback multi-host (host prims #2771) | D E F | landed |
+| 07 | Live LLM propose edge (MiniMax-M3 / deepseek-v4-flash) | E F | opt-in live |
 
 Each probe is runnable via:
 

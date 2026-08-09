@@ -36,6 +36,8 @@ On the high-leverage coordination subspace Hermes claims, Aura’s native space 
 | 03-failure-recovery | C E F | **pass** escapes=0 | pause/drop/failover |
 | 04-thin-wire | D E F | **pass** escapes=0 | schema gate |
 | 05-multihost-soak | D E F | **pass** escapes=12 | multi-process soak N=30 |
+| 06-tcp-multihost | D E F | **pass** | TCP loopback HMSG + topology (tags 20–25) |
+| 07-live-llm | E F | **pass** (live opt-in) | MiniMax-M3 + deepseek-v4-flash propose → topology |
 
 ### 05-multihost-soak detail
 

@@ -23,11 +23,13 @@ Primary objects under test:
 
 ## Current Status
 
-Phase 1–5 landed — denseness judgment on single-machine multi-process \(S_Hermes\):
-- `01`–`04` — core topology/mutation/failure/schema in \(V_A\), escapes=0
-- `05-multihost-soak` — cross-process HMSG + FS/shell \(E\) metered; judgment **practically dense**
+Phase 1–7 landed:
+- `01`–`04` — core in \(V_A\), escapes=0
+- `05` — multi-process FS mailbox \(E\) metered; **practically dense**
+- `06` — TCP loopback (#2771 host prims; do not require std/socket wrappers)
+- `07` — live LLM propose (env-minimax / env-deepseek); HTTPS \(E\) tag 30
 
-Avoid `std/orchestrator` until aura#2767. Use `hermes:host-split-lines` for soak mailboxes.
+Orchestrator #2766/#2768 fixed on host — optional re-bind later. Use `hermes:host-split-lines` for soak mailboxes.
 
 ## When generating or reviewing code
 

@@ -24,6 +24,12 @@ required=(
   "examples/04-thin-wire/main.aura"
   "examples/05-multihost-soak/main.aura"
   "examples/05-multihost-soak/worker.aura"
+  "lib/hermes-tcp.aura"
+  "lib/hermes-llm.aura"
+  "examples/06-tcp-multihost/main.aura"
+  "examples/07-live-llm/main.aura"
+  "scripts/env-minimax.sh"
+  "scripts/env-deepseek.sh"
   "scripts/run-aura.sh"
   "scripts/run-all.sh"
 )

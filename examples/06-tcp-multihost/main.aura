@@ -1,0 +1,160 @@
+; examples/06-tcp-multihost/main.aura
+;
+; Phase 6 denseness probe — TCP loopback (#2771 host prims).
+; Run: ./scripts/run-aura.sh examples/06-tcp-multihost/main.aura
+
+(require "std/string" all:)
+(require "hermes-min" all:)
+
+(hermes:stats-reset!)
+
+(display "=== Hermes 06-tcp-multihost: TCP denseness ===")
+(newline)
+(display "hermes:min-version=")
+(display hermes:min-version)
+(display " tcp-version=")
+(display hermes:tcp-version)
+(newline)
+
+; Server accept path body (used inside fiber).
+(define (serve-one L topo)
+  (let ((c (hermes:tcp-accept-timeout! L 5)))
+    (if (not (number? c))
+      (list (cons ":ok" #f) (cons ":reason" "accept-fail"))
+      (let ((frame (hermes:tcp-recv! c 512)))
+        (if (not (string? frame))
+          (begin
+            (hermes:tcp-close! c)
+            (list (cons ":ok" #f) (cons ":reason" "recv-fail")))
+          (let ((before (hermes:inbox-sum topo "collector"))
+                (r (hermes:wire-send! topo "producer" frame 16)))
+            (let ((after (hermes:inbox-sum topo "collector"))
+                  (pay (hermes:alist-ref ":payload" r 0))
+                  (ok (hermes:alist-ref ":ok" r #f)))
+              (let ((reply
+                      (if ok
+                        (string-append "OK|" (number->string pay) "|"
+                                       (number->string (- after before)))
+                        "FAIL|err|0")))
+                (hermes:tcp-send! c reply)
+                (hermes:tcp-close! c)
+                (list (cons ":ok" ok)
+                      (cons ":payload" pay)
+                      (cons ":reply" reply))))))))))
+
+; Client+server roundtrip for payload n (east *2).
+(define (tcp-hmsg-once n)
+  (let ((topo (hermes:build-star-topology))
+        (L (hermes:tcp-listen! 0)))
+    (if (not (number? L))
+      (list (cons ":ok" #f) (cons ":reason" "listen-fail"))
+      (let ((port (hermes:tcp-local-port L)))
+        (if (not (number? port))
+          (begin
+            (hermes:tcp-close! L)
+            (list (cons ":ok" #f) (cons ":reason" "port-fail")))
+          (begin
+            (hermes:clear-inbox! topo "collector")
+            (let ((fid (fiber:spawn (lambda () (serve-one L topo))))
+                  (frame (hermes:wire-encode
+                           (hermes:make-msg "tcp1" "producer" "collector" "east" n))))
+              (if (not frame)
+                (begin
+                  (hermes:tcp-close! L)
+                  (list (cons ":ok" #f) (cons ":reason" "encode-fail")))
+                (let ((s (hermes:tcp-connect! "127.0.0.1" port)))
+                  (if (not (number? s))
+                    (begin
+                      (hermes:tcp-close! L)
+                      (list (cons ":ok" #f) (cons ":reason" "connect-fail")))
+                    (begin
+                      (hermes:tcp-send! s frame)
+                      (let ((reply (hermes:tcp-recv! s 512)))
+                        (hermes:tcp-close! s)
+                        (let ((srv (fiber:join fid)))
+                          (hermes:tcp-close! L)
+                          (list (cons ":ok"
+                                      (and (string? reply)
+                                           (hermes:alist-ref ":ok" srv #f)))
+                                (cons ":port" port)
+                                (cons ":reply" (if (string? reply) reply ""))
+                                (cons ":srv_payload"
+                                      (hermes:alist-ref ":payload" srv 0))
+                                (cons ":collector_sum"
+                                      (hermes:inbox-sum topo "collector"))
+                                (cons ":want" (* 2 n))))))))))))))))
+
+(let* ((r0 (tcp-hmsg-once 7))
+       (r0-ok
+         (and (hermes:check-true (hermes:alist-ref ":ok" r0 #f))
+              (hermes:check-eq (hermes:alist-ref ":srv_payload" r0 0) 14)
+              (hermes:check-eq (hermes:alist-ref ":collector_sum" r0 0) 14)
+              (hermes:check-true
+                (string-prefix? (hermes:alist-ref ":reply" r0 "") "OK|")))))
+  (display "R0: ")
+  (write r0)
+  (newline)
+  (display "R0 ok=")
+  (display r0-ok)
+  (newline)
+
+  (define N 5)
+  (let loop ((i 1) (ok-count 0) (sum 0))
+    (if (> i N)
+      (let* ((r1-ok
+               (and (hermes:check-eq ok-count N)
+                    (hermes:check-eq sum (* 2 (quotient (* N (+ N 1)) 2)))))
+             (esc (hermes:stats-ref "escapes"))
+             (r2-ok
+               (and (hermes:check-ge esc 1)
+                    (hermes:check-ge (hermes:stats-ref "tcp_listen") 1)
+                    (hermes:check-ge (hermes:stats-ref "tcp_accept") 1)
+                    (hermes:check-ge (hermes:stats-ref "tcp_connect") 1)
+                    (hermes:check-eq (hermes:stats-ref "tcp_fail") 0)))
+             (all-ok
+               (and r0-ok r1-ok r2-ok
+                    (= (hermes:stats-ref "correctness_fail") 0)
+                    (= (hermes:stats-ref "tcp_fail") 0))))
+        (display "R1 soak ok-count=")
+        (display ok-count)
+        (display " sum=")
+        (display sum)
+        (newline)
+        (display "R1 ok=")
+        (display r1-ok)
+        (newline)
+        (display "R2 escapes=")
+        (display esc)
+        (display " tcp_fail=")
+        (display (hermes:stats-ref "tcp_fail"))
+        (newline)
+        (display "R2 ok=")
+        (display r2-ok)
+        (newline)
+        (display "stats: ")
+        (write (hermes:stats-alist))
+        (newline)
+        (if all-ok
+          (begin
+            (display "PASS: TCP loopback denseness (schema V_A + TCP E)")
+            (newline)
+            (display "RESULT pass example=06-tcp-multihost escapes=")
+            (display (hermes:stats-ref "escapes"))
+            (newline))
+          (begin
+            (display "FAIL: TCP denseness probe")
+            (newline)
+            (display "RESULT fail example=06-tcp-multihost")
+            (newline)
+            (display "  r0=")
+            (display r0-ok)
+            (display " r1=")
+            (display r1-ok)
+            (display " r2=")
+            (display r2-ok)
+            (newline))))
+      (let ((ri (tcp-hmsg-once i)))
+        (if (hermes:alist-ref ":ok" ri #f)
+          (loop (+ i 1) (+ ok-count 1)
+                (+ sum (hermes:alist-ref ":collector_sum" ri 0)))
+          (loop (+ i 1) ok-count sum))))))

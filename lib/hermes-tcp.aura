@@ -1,0 +1,75 @@
+; lib/hermes-tcp.aura — Phase 6: thin TCP transport E (#2771 host prims)
+;
+; Host prims only — do NOT require std/socket (wrappers recurse into self).
+; Keep this module small (host drops large trailing multi-export bodies).
+; Escape tags: 20=listen 21=accept 22=connect 23=send 24=recv 25=close
+
+(export hermes:tcp-version
+        hermes:tcp-listen!
+        hermes:tcp-local-port
+        hermes:tcp-accept!
+        hermes:tcp-accept-timeout!
+        hermes:tcp-connect!
+        hermes:tcp-send!
+        hermes:tcp-recv!
+        hermes:tcp-close!)
+
+(require "hermes-measure" all:)
+
+(define hermes:tcp-version 1)
+
+(define (hermes:tcp-listen! port)
+  (hermes:escape-note! 20)
+  (hermes:stats-bump! "tcp_listen")
+  (let ((fd (try (tcp-listen port) (catch (e) (quote ())))))
+    (if (number? fd)
+      (begin (hermes:stats-bump! "tcp_ok") fd)
+      (begin (hermes:stats-bump! "tcp_fail") (quote ())))))
+
+(define (hermes:tcp-local-port sock)
+  (try (tcp-local-port sock) (catch (e) (quote ()))))
+
+(define (hermes:tcp-accept! listener)
+  (hermes:escape-note! 21)
+  (hermes:stats-bump! "tcp_accept")
+  (let ((fd (try (tcp-accept listener) (catch (e) (quote ())))))
+    (if (number? fd)
+      (begin (hermes:stats-bump! "tcp_ok") fd)
+      (begin (hermes:stats-bump! "tcp_fail") (quote ())))))
+
+(define (hermes:tcp-accept-timeout! listener sec)
+  (hermes:escape-note! 21)
+  (hermes:stats-bump! "tcp_accept")
+  (let ((fd (try (tcp-accept-timeout listener sec) (catch (e) (quote ())))))
+    (if (number? fd)
+      (begin (hermes:stats-bump! "tcp_ok") fd)
+      (begin (hermes:stats-bump! "tcp_fail") (quote ())))))
+
+(define (hermes:tcp-connect! host port)
+  (hermes:escape-note! 22)
+  (hermes:stats-bump! "tcp_connect")
+  (let ((fd (try (tcp-connect host port) (catch (e) (quote ())))))
+    (if (number? fd)
+      (begin (hermes:stats-bump! "tcp_ok") fd)
+      (begin (hermes:stats-bump! "tcp_fail") (quote ())))))
+
+(define (hermes:tcp-send! sock data)
+  (hermes:escape-note! 23)
+  (hermes:stats-bump! "tcp_send")
+  (let ((n (try (tcp-send sock data) (catch (e) -1))))
+    (if (and (number? n) (>= n 0))
+      (begin (hermes:stats-bump! "tcp_ok") n)
+      (begin (hermes:stats-bump! "tcp_fail") -1))))
+
+(define (hermes:tcp-recv! sock maxlen)
+  (hermes:escape-note! 24)
+  (hermes:stats-bump! "tcp_recv")
+  (let ((s (try (tcp-recv sock maxlen) (catch (e) (quote ())))))
+    (if (string? s)
+      (begin (hermes:stats-bump! "tcp_ok") s)
+      (begin (hermes:stats-bump! "tcp_fail") (quote ())))))
+
+(define (hermes:tcp-close! sock)
+  (hermes:escape-note! 25)
+  (try (tcp-close sock) (catch (e) #f))
+  #t)
