@@ -12,7 +12,7 @@ on \(S_{\mathrm{Hermes}}\).
 | 2026-08-08 | `AURA_BIN` not visible to child unless exported | [aura#2772](https://github.com/cybrid-systems/aura/issues/2772) **P1** | Phase 5: `export AURA_BIN` + fallback path. |
 | 2026-08-08 | `std/string` `string-split` O(n) recursive depth | [aura#2770](https://github.com/cybrid-systems/aura/issues/2770) **P0** | Soak mailboxes; use `hermes:host-split-lines`. |
 | 2026-08-08 | No `tcp-listen` / `tcp-accept` | [aura#2771](https://github.com/cybrid-systems/aura/issues/2771) **fixed** | Host prims work; Phase 6 TCP probe lands. |
-| 2026-08-09 | `std/socket` pass-through wrappers recurse | residual | `(define (tcp-listen p) (tcp-listen p))` shadows prim → `()`. Use bare host prims. |
+| 2026-08-09 | `std/socket` pass-through wrappers recurse | [aura#2865](https://github.com/cybrid-systems/aura/issues/2865) **P0** | `(define (tcp-listen p) (tcp-listen p))` shadows prim → `()`. Use bare host prims until fixed. |
 | 2026-08-08 | Module free-var / require-before-export | [aura#2766](https://github.com/cybrid-systems/aura/issues/2766) **P0** | export-before-require discipline. |
 | 2026-08-08 | `std/orchestrator` agent registry broken | [aura#2768](https://github.com/cybrid-systems/aura/issues/2768) **P0** | Avoid until fixed. |
 
